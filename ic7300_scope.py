@@ -25,13 +25,22 @@ import pyqtgraph as pg
 from cw_decoder import CwDecoder
 from psk31_decoder import Psk31Decoder
 from rtty_decoder import RttyDecoder
+from ft8_decoder import Ft8Decoder
+from sstv_window import SstvWindow
 
 DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
+RADIO_SINK = "alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
 DEFAULT_PORT = ("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_"
                 "Controller_IC-7300_03009829-if00-port0")
 
 # Flux de l'écoute permanente (~/.config/pipewire/pipewire.conf.d/50-ic7300-loopback.conf)
 LOOPBACK_STREAM = "ic7300_loopback_out"
+# Radio sur un autre PC (--remote) : serveur CAT (cat_server.py) et son
+# PipeWire en réseau (pipewire-pulse.conf.d/50-reseau.conf) sur ce PC-là
+CAT_TCP_PORT = 7300
+PULSE_TCP_PORT = 4713
+REMOTE_RX = "ic7300_distant_rx"
+REMOTE_TX = "ic7300_distant_tx"
 
 
 def music_dir():
@@ -45,26 +54,64 @@ def music_dir():
 
 RECORD_DIR = os.path.join(music_dir(), "IC-7300")
 
-# réglages du scope de la radio avant que l'appli les change ; le fichier
-# n'existe que pendant que l'appli tourne (ou si elle n'a pas pu les remettre)
-SCOPE_STATE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
-                           or os.path.expanduser("~/.config"),
-                           "ic7300-scope", "scope-origine.json")
+# réglages de la radio avant que l'appli les change (scope, mode data pendant
+# l'émission) ; le fichier n'existe que tant qu'il reste quelque chose à
+# remettre, y compris si l'appli a planté
+STATE_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
+                          or os.path.expanduser("~/.config"),
+                          "ic7300-scope", "etat-origine.json")
+# dernière fréquence et dernier mode utilisés sur chaque bande
+BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
+# bandes émission de l'IC-7300 : nom, limites (Hz), fréquence et mode de départ
+BANDS = [("160m", 1_810_000, 2_000_000, 1_850_000, "LSB"),
+         ("80m", 3_500_000, 3_800_000, 3_700_000, "LSB"),
+         ("60m", 5_351_500, 5_366_500, 5_360_000, "USB"),
+         ("40m", 7_000_000, 7_200_000, 7_100_000, "LSB"),
+         ("30m", 10_100_000, 10_150_000, 10_120_000, "CW"),
+         ("20m", 14_000_000, 14_350_000, 14_200_000, "USB"),
+         ("17m", 18_068_000, 18_168_000, 18_130_000, "USB"),
+         ("15m", 21_000_000, 21_450_000, 21_250_000, "USB"),
+         ("12m", 24_890_000, 24_990_000, 24_950_000, "USB"),
+         ("10m", 28_000_000, 29_700_000, 28_500_000, "USB"),
+         ("6m", 50_000_000, 52_000_000, 50_150_000, "USB"),
+         ("4m", 70_000_000, 70_500_000, 70_200_000, "USB")]
 
 
-def load_scope_state():
+def band_of(hz):
+    for name, low, high, _, _ in BANDS:
+        if low <= hz <= high:
+            return name
+    return None
+
+
+def load_state():
     try:
-        with open(SCOPE_STATE) as f:
-            state = json.load(f)
-        return state["mode"], state["speed"]
-    except (OSError, ValueError, KeyError):
-        return None
+        with open(STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
 
-def save_scope_state(mode, speed):
-    os.makedirs(os.path.dirname(SCOPE_STATE), exist_ok=True)
-    with open(SCOPE_STATE, "w") as f:
-        json.dump({"mode": mode, "speed": speed}, f)
+def update_state(**values):
+    state = load_state()
+    state.update(values)
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+
+def remove_state(*keys):
+    state = load_state()
+    for key in keys:
+        state.pop(key, None)
+    if state:
+        with open(STATE_FILE, "w") as f:
+            json.dump(state, f)
+    else:
+        try:
+            os.remove(STATE_FILE)
+        except OSError:
+            pass
 
 
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
@@ -79,6 +126,16 @@ RIG_ADDR = 0x94                 # adresse CI-V par défaut de l'IC-7300
 CTRL_ADDR = 0xE0
 MODES = {0x00: "LSB", 0x01: "USB", 0x02: "AM", 0x03: "CW", 0x04: "RTTY",
          0x05: "FM", 0x07: "CW-R", 0x08: "RTTY-R"}
+DATA_MODES = ("LSB", "USB")     # proposés aussi en mode data (LSB-D, USB-D)
+MODE_NAMES = ["LSB", "LSB-D", "USB", "USB-D", "AM", "CW", "RTTY", "FM",
+              "CW-R", "RTTY-R"]
+TX_TIMEOUT = 180                # s : l'émission est coupée au-delà
+# repères de l'IC-7300 pour les mesures en émission
+PO_POINTS = [(0, 0), (143, 50), (213, 100), (255, 120)]           # % de puissance
+SWR_POINTS = [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (255, 6.0)]
+COMP_POINTS = [(0, 0.0), (130, 15.0), (241, 30.0), (255, 32.0)]     # dB
+ID_POINTS = [(0, 0.0), (97, 10.0), (146, 15.0), (241, 25.0)]      # A
+ALC_ZONE = 120                  # au-delà, l'ALC sort de sa zone sur la radio
 MIN_FREQ = 30_000               # couverture de réception de l'IC-7300
 MAX_FREQ = 74_800_000
 SPANS = [2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
@@ -86,6 +143,16 @@ SPANS = [2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
 PASSBANDS = {"LSB": (-3.0, -0.1), "USB": (0.1, 3.0), "CW": (-0.25, 0.25),
              "CW-R": (-0.25, 0.25), "RTTY": (-0.25, 0.25),
              "RTTY-R": (-0.25, 0.25), "AM": (-3.0, 3.0), "FM": (-7.5, 7.5)}
+
+
+def base_mode(name):
+    """Le mode sans le mode data : USB-D → USB."""
+    return name.removesuffix("-D")
+
+
+def mode_name(code, data):
+    name = MODES.get(code, f"mode {code:02X}")
+    return name + "-D" if data and name in DATA_MODES else name
 STEPS = [("10 Hz", 10), ("100 Hz", 100), ("1 kHz", 1000), ("5 kHz", 5000),
          ("10 kHz", 10_000), ("100 kHz", 100_000)]
 
@@ -145,6 +212,73 @@ def find_loopback_stream():
     return None
 
 
+def remote_audio(host):
+    """Crée ici l'entrée et la sortie son de la radio branchée sur `host`,
+    plus l'écoute sur la sortie par défaut. Renvoie les modules à décharger."""
+    unload_remote_audio(None)       # restes d'une session plantée
+    server = f"server=tcp:{host}:{PULSE_TCP_PORT}"
+    commands = [
+        ["module-tunnel-source", server, f"source={DEFAULT_SOURCE}",
+         f"source_name={REMOTE_RX}"],
+        ["module-tunnel-sink", server, f"sink={RADIO_SINK}", f"sink_name={REMOTE_TX}"],
+        ["module-loopback", f"source={REMOTE_RX}", "latency_msec=60",
+         "source_dont_move=true", f"sink_input_properties=node.name={LOOPBACK_STREAM}"],
+    ]
+    modules = []
+    for command in commands:
+        try:
+            out = subprocess.run(["pactl", "load-module", *command],
+                                 capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            out = None
+        if out is None or out.returncode != 0:
+            unload_remote_audio(modules)
+            error = out.stderr.strip() if out else "pas de réponse"
+            raise RuntimeError(f"{command[0]} : {error or 'échec'}")
+        modules.append(out.stdout.strip())
+    return modules
+
+
+def unload_remote_audio(modules):
+    """Décharge les modules donnés, ou tous ceux de --remote (None)."""
+    if modules is None:
+        out = subprocess.run(["pactl", "list", "modules", "short"],
+                             capture_output=True, text=True).stdout
+        modules = [line.split()[0] for line in out.splitlines()
+                   if REMOTE_RX in line or REMOTE_TX in line]
+    for module in reversed(modules):
+        subprocess.run(["pactl", "unload-module", module], capture_output=True)
+
+
+def list_microphones(exclude):
+    """Entrées son du PC (nom, description), sans les retours et sans la radio."""
+    try:
+        out = subprocess.run(["pactl", "-f", "json", "list", "sources"],
+                             capture_output=True, text=True, timeout=2).stdout
+        sources = json.loads(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    # « description » vaut « (null) » quand elle contient des accents
+    return [(src["name"], src["properties"].get("device.description") or src["name"])
+            for src in sources
+            if not src["name"].endswith(".monitor") and src["name"] != exclude]
+
+
+def sink_volume(sink):
+    try:
+        out = subprocess.run(["pactl", "get-sink-volume", sink],
+                             capture_output=True, text=True, timeout=2).stdout
+        return int(out.split("%")[0].split()[-1])
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
+def piecewise(raw, points):
+    """Conversion d'un niveau CI-V (0 à 255) par interpolation entre repères."""
+    xs, ys = zip(*points)
+    return float(np.interp(raw, xs, ys))
+
+
 def parse_frequency(text):
     """« 14.074 » ou « 14,074 » → MHz, « 7074 » → kHz, « 7074000 » → Hz."""
     text = text.strip().replace(",", ".")
@@ -172,8 +306,9 @@ class AudioReader(QtCore.QThread):
         self.proc = None
         self._running = True
         self.decoders = {"cw": CwDecoder(RATE), "psk31": Psk31Decoder(RATE),
-                         "rtty": RttyDecoder(RATE)}
+                         "rtty": RttyDecoder(RATE), "ft8": Ft8Decoder(RATE)}
         self.decoder = None             # décodeur choisi, ou None
+        self.sstv = None                # décodeur SSTV quand sa fenêtre est ouverte
         self._record_lock = threading.Lock()
         self._record = None
         self.recorded_frames = 0
@@ -210,13 +345,16 @@ class AudioReader(QtCore.QThread):
             db = 20 * np.log10(mag + 1e-10)
             rms = 20 * np.log10(np.sqrt(np.mean(x * x)) + 1e-10)
             self.spectrum.emit(db.astype(np.float32), float(rms))
+            sstv = self.sstv
+            if sstv:
+                sstv.feed(x)
             decoder = self.decoder
             if decoder:
                 decoder.track_pitch(db, BIN_HZ)
                 text = decoder.feed(x)
                 if text:
                     self.decoded.emit(text)
-                self.decoder_state.emit(decoder.status(), decoder.pitch,
+                self.decoder_state.emit(decoder.status(), decoder.pitch or 0.0,
                                         decoder.has_signal, decoder.key_down)
 
     def start_recording(self, path):
@@ -237,6 +375,7 @@ class AudioReader(QtCore.QThread):
 
     def stop(self):
         self.stop_recording()
+        self.decoders["ft8"].close()
         self._running = False
         if self.proc:
             self.proc.terminate()
@@ -252,6 +391,12 @@ class CivReader(QtCore.QThread):
     other_mode = QtCore.pyqtSignal(str)
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
+    power = QtCore.pyqtSignal(int)              # puissance réglée, 0 à 255
+    transmitting = QtCore.pyqtSignal(bool)      # la radio émet
+    tx_meters = QtCore.pyqtSignal(int, int, int)  # puissance, ROS, ALC (0 à 255)
+    usb_mod = QtCore.pyqtSignal(int)            # menu USB MOD Level, 0 à 255
+    comp = QtCore.pyqtSignal(int)               # compression, 0 à 255
+    drain = QtCore.pyqtSignal(int)              # courant de l'ampli (Id), 0 à 255
     scope = QtCore.pyqtSignal(object, int, int) # balayage, bords bas/haut (Hz)
     span = QtCore.pyqtSignal(int)               # demi-largeur du scope (Hz)
     status = QtCore.pyqtSignal(str)
@@ -268,6 +413,16 @@ class CivReader(QtCore.QThread):
         self._tuner = None
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
         self._pending_span = None
+        self._pending_power = None
+        self._pending_usb_mod = None
+        self._pending_ptt = None
+        self._ptt = False               # émission demandée par l'appli
+        self._tx = False                # la radio dit qu'elle émet
+        self._data_state = None         # (data, filtre) lu sur la radio
+        self._mode_code = None          # dernier mode lu (code CI-V)
+        self._data_off_mod = None       # menu DATA OFF MOD lu sur la radio
+        self._tx_data = False           # émission en mode data (numérique)
+        self._tx_meters = [0, 0, 0]
         self._wave = None
         self._wave_edges = None
         # réglages du scope de la radio, remis à la fermeture
@@ -277,11 +432,15 @@ class CivReader(QtCore.QThread):
     def run(self):
         while self._running:
             try:
-                with serial.Serial(self.port, self.baud, timeout=0.05) as ser:
+                # chemin du port, ou socket://hôte:port (cat_server.py)
+                with serial.serial_for_url(self.port, self.baud, timeout=0.05,
+                                           exclusive=True) as ser:
                     self.status.emit("CAT connecté")
                     self._buf = bytearray()
+                    self._recover(ser)
                     self._scope_setup(ser)
                     self._poll(ser)
+                    self._release(ser)
                     self._scope_restore(ser)
             except (serial.SerialException, OSError) as e:
                 self.status.emit(f"CAT indisponible : {e}")
@@ -317,21 +476,101 @@ class CivReader(QtCore.QThread):
     def set_atu(self, on):
         self._commands.put((0x1C, 0x01, 0x01 if on else 0x00))
 
+    def set_power(self, level):
+        self._pending_power = level
+
+    def set_usb_mod(self, level):
+        """Gain de l'entrée USB à l'émission (menu USB MOD Level), 0 à 255."""
+        self._pending_usb_mod = level
+
+    def set_ptt(self, on, data=False):
+        """Émission (True) ou réception (False).
+
+        data=True passe la radio en mode data (SSTV…) ; sinon le mode reste
+        tel quel (phonie) et l'entrée USB est prise hors mode data."""
+        if on:
+            self._tx_data = data
+        self._pending_ptt = on
+
+    def _key(self, ser):
+        if self._tx_data:
+            self._key_data(ser)
+        else:
+            self._key_voice(ser)
+        self._command(ser, 0x1C, 0x00, 0x01)
+        self._ptt = True
+
+    def _key_voice(self, ser):
+        # hors mode data, la radio prend le son sur l'entrée du menu
+        # DATA OFF MOD (MIC,ACC ici) : on la met sur USB le temps de l'émission
+        self._data_off_mod = None
+        self._transact(ser, (0x1A, 0x05, 0x00, 0x66), (0x1A,))
+        saved = self._data_off_mod
+        if saved is not None and saved != 0x03:
+            update_state(tx_menu=saved)
+            self._command(ser, 0x1A, 0x05, 0x00, 0x66, 0x03)
+
+    def _key_data(self, ser):
+        # en mode data, le son vient de l'USB (réglage DATA MOD = USB) :
+        # on y passe le temps de l'émission et on note l'état d'avant
+        self._data_state = None
+        self._transact(ser, (0x1A, 0x06), (0x1A,))
+        saved = self._data_state or (0x00, 0x00)
+        update_state(tx_data=list(saved))
+        if saved[0] == 0x00:
+            self._command(ser, 0x1A, 0x06, 0x01, self._filter)
+
+    def _release(self, ser):
+        """Repasse en réception et remet les réglages d'avant l'émission."""
+        if self._ptt:
+            self._command(ser, 0x1C, 0x00, 0x00)
+            self._ptt = False
+        state = load_state()
+        saved = state.get("tx_data")
+        if saved:
+            if saved[0] == 0x00:
+                self._command(ser, 0x1A, 0x06, *saved)
+            remove_state("tx_data")
+        if state.get("tx_menu") is not None:
+            self._command(ser, 0x1A, 0x05, 0x00, 0x66, state["tx_menu"])
+            remove_state("tx_menu")
+
+    def _recover(self, ser):
+        """Si l'appli a planté en émission, on coupe et on remet le mode data."""
+        state = load_state()
+        if state.get("tx_data") or state.get("tx_menu") is not None:
+            self._command(ser, 0x1C, 0x00, 0x00)
+            self._release(ser)
+            self.status.emit("Émission coupée : l'appli s'était arrêtée en émission")
+
     def _poll(self, ser):
         # La radio ignore une commande reçue pendant qu'elle répond à la
         # précédente : on attend chaque réponse avant d'envoyer la suivante.
         n = 0
         while self._running:
             changed = False
+            ptt, self._pending_ptt = self._pending_ptt, None
+            if ptt is True and not self._ptt:
+                self._key(ser)
+                changed = True
+            elif ptt is False:
+                self._release(ser)
+                changed = True
             hz, self._pending_freq = self._pending_freq, None
             if hz is not None:
                 self._command(ser, 0x05, *to_bcd_le(hz))
                 changed = True
             mode, self._pending_mode = self._pending_mode, None
             if mode is not None:
-                code = next(c for c, m in MODES.items() if m == mode)
+                base = base_mode(mode)
+                code = next(c for c, m in MODES.items() if m == base)
                 # sans le filtre, la radio repasse sur son filtre par défaut
                 self._command(ser, 0x06, code, self._filter)
+                if base in DATA_MODES or base in ("AM", "FM"):
+                    data = 0x01 if mode.endswith("-D") else 0x00
+                    self._command(ser, 0x1A, 0x06, data,
+                                  self._filter if data else 0x00)
+                self._transact(ser, (0x1A, 0x06), (0x1A,))
                 changed = True
             while not self._commands.empty():
                 self._command(ser, *self._commands.get())
@@ -340,35 +579,51 @@ class CivReader(QtCore.QThread):
             if level is not None:
                 self._command(ser, 0x14, 0x01, level // 100,
                               (level // 10 % 10) << 4 | level % 10)
+            power, self._pending_power = self._pending_power, None
+            if power is not None:
+                self._command(ser, 0x14, 0x0A, power // 100,
+                              (power // 10 % 10) << 4 | power % 10)
+            level, self._pending_usb_mod = self._pending_usb_mod, None
+            if level is not None:
+                self._command(ser, 0x1A, 0x05, 0x00, 0x65, level // 100,
+                              (level // 10 % 10) << 4 | level % 10)
             span, self._pending_span = self._pending_span, None
             if span is not None:
                 self._command(ser, 0x27, 0x15, 0x00, *to_bcd_le(span))
                 self._transact(ser, (0x27, 0x15, 0x00), (0x27,))
             if changed:
                 n = 0
-            if n % 10 == 0:
-                queries = [(0x03,), (0x04,), (0x25, 0x01), (0x26, 0x01),
-                           (0x14, 0x01), (0x1C, 0x01), (0x15, 0x02)]
+            if self._ptt or self._tx:       # en émission : puissance, ROS, ALC
+                queries = [(0x1C, 0x00), (0x15, 0x11), (0x15, 0x12), (0x15, 0x13),
+                           (0x15, 0x14), (0x15, 0x16)]
+                if n % 10 == 0:
+                    queries += [(0x03,), (0x04,), (0x1A, 0x06)]
+            elif n % 10 == 0:
+                queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
+                           (0x14, 0x01), (0x14, 0x0A), (0x1C, 0x00),
+                           (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x15, 0x02)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
-                queries = [(0x1C, 0x01), (0x15, 0x02)]
+                queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
                 queries = [(0x15, 0x02)]
             n += 1
             for query in queries:
+                if not self._running:
+                    break               # fermeture : on remet la radio sans attendre
                 self._transact(ser, query, (query[0],))
             time.sleep(0.05)
 
     def _scope_setup(self, ser):
         """Scope de la radio centré sur la fréquence, données envoyées en CI-V."""
         if self._scope_mode is None:
-            saved = load_scope_state()
+            saved = load_state().get("scope")
             if saved:                   # la dernière session n'a pas pu les remettre
                 self._scope_mode, self._scope_speed = saved
             else:
                 self._transact(ser, (0x27, 0x14, 0x00), (0x27,))
                 self._transact(ser, (0x27, 0x1A, 0x00), (0x27,))
                 if self._scope_mode is not None and self._scope_speed is not None:
-                    save_scope_state(self._scope_mode, self._scope_speed)
+                    update_state(scope=[self._scope_mode, self._scope_speed])
         self._command(ser, 0x27, 0x14, 0x00, 0x00)      # mode centré
         self._command(ser, 0x27, 0x1A, 0x00, 0x00)      # balayage rapide
         self._command(ser, 0x27, 0x11, 0x01)            # données vers le CI-V
@@ -380,10 +635,7 @@ class CivReader(QtCore.QThread):
             self._command(ser, 0x27, 0x14, 0x00, self._scope_mode)
         if self._scope_speed is not None:
             self._command(ser, 0x27, 0x1A, 0x00, self._scope_speed)
-        try:
-            os.remove(SCOPE_STATE)
-        except OSError:
-            pass
+        remove_state("scope")
 
     def _command(self, ser, *payload):
         reply = self._transact(ser, payload, (0xFB, 0xFA))
@@ -404,6 +656,11 @@ class CivReader(QtCore.QThread):
                     return cmd
         return None
 
+    def _emit_mode(self):
+        if self._mode_code is not None:
+            data = self._data_state is not None and self._data_state[0]
+            self.mode.emit(mode_name(self._mode_code, data))
+
     def _handle(self, frame):
         """Traite une trame CI-V et renvoie sa commande."""
         start = frame.find(b"\xfe\xfe")
@@ -419,16 +676,37 @@ class CivReader(QtCore.QThread):
         if cmd in (0x00, 0x03) and len(data) == 5:
             self.frequency.emit(bcd_le(data))
         elif cmd in (0x01, 0x04) and data:
-            self.mode.emit(MODES.get(data[0], f"mode {data[0]:02X}"))
+            self._mode_code = data[0]
             if len(data) >= 2:
                 self._filter = data[1]
+            self._emit_mode()
         elif cmd == 0x25 and len(data) == 6 and data[0] == 0x01:
             self.other_frequency.emit(bcd_le(data[1:]))
         elif cmd == 0x26 and len(data) >= 2 and data[0] == 0x01:
-            self.other_mode.emit(MODES.get(data[1], f"mode {data[1]:02X}"))
+            self.other_mode.emit(mode_name(data[1], len(data) >= 3 and data[2]))
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x01:
             self._tuner = data[1]
             self.tuner.emit(data[1])
+        elif cmd == 0x1C and len(data) == 2 and data[0] == 0x00:
+            self._tx = data[1] == 0x01
+            self.transmitting.emit(self._tx)
+        elif cmd == 0x1A and len(data) == 3 and data[0] == 0x06:
+            self._data_state = (data[1], data[2])
+            self._emit_mode()
+        elif cmd == 0x1A and len(data) == 5 and data[:3] == b"\x05\x00\x65":
+            self.usb_mod.emit(bcd_be(data[3:]))
+        elif cmd == 0x1A and len(data) == 4 and data[:3] == b"\x05\x00\x66":
+            self._data_off_mod = data[3]
+        elif cmd == 0x14 and len(data) == 3 and data[0] == 0x0A:
+            self.power.emit(bcd_be(data[1:]))
+        elif cmd == 0x15 and len(data) == 3 and data[0] in (0x11, 0x12, 0x13):
+            self._tx_meters[data[0] - 0x11] = bcd_be(data[1:])
+            if data[0] == 0x13:
+                self.tx_meters.emit(*self._tx_meters)
+        elif cmd == 0x15 and len(data) == 3 and data[0] == 0x14:
+            self.comp.emit(bcd_be(data[1:]))
+        elif cmd == 0x15 and len(data) == 3 and data[0] == 0x16:
+            self.drain.emit(bcd_be(data[1:]))
         elif cmd == 0x14 and len(data) == 3 and data[0] == 0x01:
             self.af_gain.emit(bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x02:
@@ -462,8 +740,9 @@ class CivReader(QtCore.QThread):
             self._wave = None               # trame perdue : on attend le suivant
 
     def stop(self):
+        # laisser le temps de couper l'émission et de remettre le scope
         self._running = False
-        self.wait(2000)
+        self.wait(6000)
 
 
 class FrequencyDisplay(QtWidgets.QLabel):
@@ -640,6 +919,8 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__()
         self.setWindowTitle("IC-7300 Scope")
         self.audio = AudioReader(args.source)   # démarré une fois l'écran prêt
+        self.audio_rate = RATE
+        self.sstv_window = None
         self.resize(1100, 760)
         self.fmax = args.fmax
         self.avg = None
@@ -668,7 +949,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freq_entry.setMaximumWidth(130)
         self.freq_entry.returnPressed.connect(self.on_freq_entered)
         self.mode_combo = QtWidgets.QComboBox()
-        self.mode_combo.addItems(MODES.values())
+        self.mode_combo.addItems(MODE_NAMES)
         self.mode_combo.setStyleSheet("font: bold 16pt; color: #ffd54a;")
         self.mode_combo.activated[str].connect(self.on_mode_selected)
         self.cursor_label = QtWidgets.QLabel("")
@@ -706,6 +987,34 @@ class MainWindow(QtWidgets.QMainWindow):
         bars.addWidget(self.level_meter, 1, 1)
         bars.addWidget(self.level_value, 1, 2)
         left.addLayout(bars)
+        # Bargraphs d'émission
+        tx_bars = QtWidgets.QGridLayout()
+        swr_ticks = [(raw, f"{swr:g}") for raw, swr in SWR_POINTS[:-1]] + [(255, "∞")]
+        self.swr_meter = BarGraph(0, 255, swr_ticks, red_from=80, segments=24)
+        comp_ticks = [(v, f"{v}") for v in (0, 10, 20, 30)]
+        self.comp_meter = BarGraph(0, 30, comp_ticks, red_from=20, segments=24)
+        alc_ticks = [(v, f"{v}") for v in (0, 50, 100, 150)]
+        self.alc_meter = BarGraph(0, 150, alc_ticks, red_from=100, segments=24)
+        self.alc_meter.setToolTip("ALC en % de sa zone : rester sous 100")
+        id_ticks = [(v, f"{v}") for v in (0, 5, 10, 15, 20, 25)]
+        self.id_meter = BarGraph(0, 25, id_ticks, red_from=22, segments=24)
+        self.id_meter.setToolTip("Courant consommé par l'ampli (Id)")
+        self.swr_value = QtWidgets.QLabel("")
+        self.comp_value = QtWidgets.QLabel("")
+        self.alc_value = QtWidgets.QLabel("")
+        self.id_value = QtWidgets.QLabel("")
+        for i, (name, meter, value) in enumerate(
+                (("ROS", self.swr_meter, self.swr_value),
+                 ("COMP dB", self.comp_meter, self.comp_value),
+                 ("ALC %", self.alc_meter, self.alc_value),
+                 ("Id", self.id_meter, self.id_value))):
+            value.setMinimumWidth(60)
+            value.setStyleSheet("font: bold 12pt monospace;")
+            row, col = divmod(i, 2)
+            tx_bars.addWidget(QtWidgets.QLabel(name), row, 3 * col)
+            tx_bars.addWidget(meter, row, 3 * col + 1)
+            tx_bars.addWidget(value, row, 3 * col + 2)
+        left.addLayout(tx_bars)
         left.addStretch()
 
         # VFO
@@ -743,10 +1052,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.atu_button.clicked.connect(self.on_atu)
         vfo.addWidget(self.tune_button, 4, 0, 1, 2)
         vfo.addWidget(self.atu_button, 4, 2, 1, 2)
+
+        # Bandes : la radio retrouve la dernière fréquence utilisée sur la bande
+        try:
+            with open(BANDS_FILE) as f:
+                self.band_memory = json.load(f)
+        except (OSError, ValueError):
+            self.band_memory = {}
+        bands = QtWidgets.QGridLayout()
+        bands.setSpacing(4)
+        self.band_buttons = {}
+        for i, (name, low, high, _, _) in enumerate(BANDS):
+            button = QtWidgets.QPushButton(name)
+            button.setCheckable(True)
+            button.setMinimumWidth(52)
+            button.setStyleSheet("QPushButton:checked { background: #ffd54a; "
+                                 "color: #101418; font-weight: bold; }")
+            button.setToolTip(f"{low / 1e6:g} – {high / 1e6:g} MHz")
+            button.clicked.connect(lambda _, n=name: self.on_band(n))
+            bands.addWidget(button, i // 2, i % 2)
+            self.band_buttons[name] = button
+        bands.setRowStretch(len(BANDS) // 2, 1)
+
         header = QtWidgets.QHBoxLayout()
         header.addLayout(left, stretch=1)
         header.addSpacing(10)
         header.addLayout(vfo)
+        header.addSpacing(6)
+        header.addLayout(bands)
         layout.addLayout(header)
 
         # Spectre et waterfall
@@ -796,6 +1129,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pitch_lines.append(line)
         graphics.scene().sigMouseMoved.connect(self.on_mouse_moved)
         graphics.scene().sigMouseClicked.connect(self.on_mouse_clicked)
+        # molette : change la fréquence ; glisser en vue RF : déplace la bande
+        self.drag = None                # (x de départ, kHz par pixel, fréquence)
+        self.dragged = False
+        graphics.viewport().installEventFilter(self)
         layout.addWidget(graphics, stretch=1)
 
         # Réglages
@@ -884,6 +1221,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_combo.addItem("CW", "cw")
         self.decoder_combo.addItem("PSK31", "psk31")
         self.decoder_combo.addItem("RTTY 45", "rtty")
+        self.decoder_combo.addItem("FT8", "ft8")
         self.decoder_auto = QtWidgets.QCheckBox("Calage auto")
         self.decoder_auto.setChecked(True)
         self.rtty_invert = QtWidgets.QCheckBox("Inverser")
@@ -900,8 +1238,14 @@ class MainWindow(QtWidgets.QMainWindow):
         decoder_row.addWidget(self.rtty_invert)
         decoder_row.addWidget(self.decoder_led)
         decoder_row.addWidget(self.decoder_info)
+        self.decoder_led.setMinimumWidth(16)
         decoder_row.addStretch()
         decoder_row.addWidget(decoder_clear)
+        sstv_button = QtWidgets.QPushButton("SSTV…")
+        sstv_button.setToolTip("Réception et émission d'images SSTV, "
+                               "dans une fenêtre à part")
+        sstv_button.clicked.connect(self.open_sstv)
+        decoder_row.addWidget(sstv_button)
         decoder_row.addSpacing(20)
         self.record_button = QtWidgets.QPushButton("● Enregistrer")
         self.record_button.setCheckable(True)
@@ -927,6 +1271,85 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_text.setVisible(False)
         layout.addLayout(decoder_row)
         layout.addWidget(self.decoder_text)
+
+        # Émission : micro du PC ou fichier, envoyés à la radio par l'USB
+        self.radio_sink = args.sink
+        tx_row = QtWidgets.QHBoxLayout()
+        self.power_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.power_slider.setRange(0, 100)
+        self.power_slider.setFixedWidth(120)
+        self.power_slider.setToolTip("Puissance d'émission de la radio")
+        self.power_slider.setEnabled(False)     # activé quand la radio répond
+        self.power_label = QtWidgets.QLabel("")
+        self.power_label.setMinimumWidth(55)
+        self.tx_source = QtWidgets.QComboBox()
+        for name, description in list_microphones(args.source):
+            self.tx_source.addItem(f"Micro : {description}", name)
+        self.tx_source.addItem("Fichier audio", "file")
+        self.tx_source.setToolTip("Ce qui part à l'émission")
+        self.tx_file = None
+        self.tx_file_button = QtWidgets.QPushButton("Choisir…")
+        self.tx_file_button.clicked.connect(self.choose_tx_file)
+        self.tx_level = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.tx_level.setRange(0, 100)
+        self.tx_level.setFixedWidth(100)
+        self.tx_level.setToolTip("Niveau du son envoyé à la radio. Le régler "
+                                 "pour que l'ALC bouge sans dépasser.")
+        volume = sink_volume(self.radio_sink)
+        self.tx_level.setValue(volume if volume is not None else 50)
+        self.tx_level_label = QtWidgets.QLabel(f"{self.tx_level.value()} %")
+        self.tx_level_label.setMinimumWidth(40)
+        self.tx_level.valueChanged.connect(self.on_tx_level)
+        # gain USB de la radio : c'est lui qui fait monter l'ALC
+        self.alc_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.alc_slider.setRange(0, 100)
+        self.alc_slider.setFixedWidth(100)
+        self.alc_slider.setToolTip("Gain de l'entrée USB de la radio (menu USB MOD "
+                                   "Level). En émission, le monter jusqu'à ce que "
+                                   "l'ALC bouge, sans rester au maximum.")
+        self.alc_slider.setEnabled(False)       # activé quand la radio répond
+        self.alc_slider_label = QtWidgets.QLabel("")
+        self.alc_slider_label.setMinimumWidth(40)
+        self.tx_meter_label = QtWidgets.QLabel("")
+        self.tx_meter_label.setStyleSheet("font: 11pt monospace;")
+        self.ptt_button = QtWidgets.QPushButton("ÉMETTRE")
+        self.ptt_button.setCheckable(True)
+        self.ptt_button.setMinimumWidth(120)
+        self.ptt_button.setToolTip(f"La radio émet. Coupure automatique après "
+                                   f"{TX_TIMEOUT // 60} min (ou la durée du "
+                                   f"fichier s'il est plus long).")
+        self.ptt_button.toggled.connect(self.on_ptt)
+        tx_row.addWidget(QtWidgets.QLabel("Puissance"))
+        tx_row.addWidget(self.power_slider)
+        tx_row.addWidget(self.power_label)
+        tx_row.addSpacing(10)
+        tx_row.addWidget(self.tx_source)
+        tx_row.addWidget(self.tx_file_button)
+        tx_row.addSpacing(10)
+        tx_row.addWidget(QtWidgets.QLabel("Niveau"))
+        tx_row.addWidget(self.tx_level)
+        tx_row.addWidget(self.tx_level_label)
+        tx_row.addSpacing(10)
+        tx_row.addWidget(QtWidgets.QLabel("Réglage ALC"))
+        tx_row.addWidget(self.alc_slider)
+        tx_row.addWidget(self.alc_slider_label)
+        tx_row.addWidget(self.tx_meter_label)
+        tx_row.addStretch()
+        tx_row.addWidget(self.ptt_button)
+        layout.addLayout(tx_row)
+        self.tx_source.currentIndexChanged.connect(self.on_tx_source)
+        self.on_tx_source()
+        self.power_slider.valueChanged.connect(self.on_power_slider)
+        self.alc_slider.valueChanged.connect(self.on_alc_slider)
+        self.tx_active = False
+        self.tx_digital = False         # émission numérique (SSTV) : mode data
+        self.tx_started = 0.0
+        self.tx_limit = TX_TIMEOUT          # s ; plus pour un fichier plus long
+        self.tx_loopback = None             # module PipeWire micro → radio
+        self.tx_player = None               # paplay du fichier
+        self.tx_timer = QtCore.QTimer(self)
+        self.tx_timer.setInterval(250)
+        self.tx_timer.timeout.connect(self.check_tx)
         self.decoder_combo.currentIndexChanged.connect(self.on_decoder_changed)
         self.decoder_auto.toggled.connect(self.on_decoder_auto)
         decoder_clear.clicked.connect(self.decoder_text.clear)
@@ -956,6 +1379,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
             self.civ.tuner.connect(self.on_tuner)
+            self.civ.power.connect(self.on_power)
+            self.civ.transmitting.connect(self.on_transmitting)
+            self.civ.tx_meters.connect(self.on_tx_meters)
+            self.civ.usb_mod.connect(self.on_usb_mod)
+            self.civ.comp.connect(self.on_comp)
+            self.civ.drain.connect(self.on_drain)
             self.civ.scope.connect(self.on_scope)
             self.civ.span.connect(self.on_span)
             self.civ.status.connect(self.statusBar().showMessage)
@@ -1065,7 +1494,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.freq_hz is None:
             return
         f = self.freq_hz / 1000
-        low, high = PASSBANDS.get(self.mode_combo.currentText(), (-1.5, 1.5))
+        low, high = PASSBANDS.get(base_mode(self.mode_combo.currentText()),
+                                  (-1.5, 1.5))
         for line in self.tuned_lines:
             line.setPos(f)
         for band in self.passbands:
@@ -1090,6 +1520,33 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freq_hz = hz
         self.freq_label.setText(format_frequency(hz))
         self._update_markers()
+        band = band_of(hz)
+        for name, button in self.band_buttons.items():
+            button.setChecked(name == band)
+
+    def _remember_band(self):
+        """Note la fréquence et le mode actuels pour la bande en cours."""
+        band = self.freq_hz and band_of(self.freq_hz)
+        if band:
+            self.band_memory[band] = [self.freq_hz, self.mode_combo.currentText()]
+            try:
+                os.makedirs(os.path.dirname(BANDS_FILE), exist_ok=True)
+                with open(BANDS_FILE, "w") as f:
+                    json.dump(self.band_memory, f)
+            except OSError:
+                pass
+
+    def on_band(self, name):
+        if not self.civ or self.tx_active:
+            self.band_buttons[name].setChecked(name == band_of(self.freq_hz or 0))
+            return
+        self._remember_band()
+        default = next(b for b in BANDS if b[0] == name)
+        hz, mode = self.band_memory.get(name, (default[3], default[4]))
+        if mode in MODE_NAMES and mode != self.mode_combo.currentText():
+            self.mode_combo.setCurrentText(mode)
+            self.civ.set_mode(mode)
+        self.tune_to(hz)
 
     def on_mode(self, name):
         self.mode_combo.setCurrentText(name)
@@ -1155,6 +1612,175 @@ class MainWindow(QtWidgets.QMainWindow):
         self.vfo_label.setText(f"VFO {self.active_vfo or '?'}")
         self._show_other()
         self.civ.vfo_operation(code)
+
+    def on_power(self, raw):
+        self.power_slider.setEnabled(True)
+        if not self.power_slider.isSliderDown():
+            self.power_slider.blockSignals(True)
+            self.power_slider.setValue(round(raw * 100 / 255))
+            self.power_slider.blockSignals(False)
+        self.power_label.setText(f"≈ {self.power_slider.value()} W")
+
+    def on_power_slider(self, percent):
+        self.power_label.setText(f"≈ {percent} W")
+        if self.civ:
+            self.civ.set_power(round(percent * 255 / 100))
+
+    def on_usb_mod(self, raw):
+        self.alc_slider.setEnabled(True)
+        if not self.alc_slider.isSliderDown():
+            self.alc_slider.blockSignals(True)
+            self.alc_slider.setValue(round(raw * 100 / 255))
+            self.alc_slider.blockSignals(False)
+        self.alc_slider_label.setText(f"{self.alc_slider.value()} %")
+
+    def on_alc_slider(self, percent):
+        self.alc_slider_label.setText(f"{percent} %")
+        if self.civ:
+            self.civ.set_usb_mod(round(percent * 255 / 100))
+
+    def on_tx_source(self):
+        is_file = self.tx_source.currentData() == "file"
+        self.tx_file_button.setVisible(is_file)
+        if is_file and self.tx_file:
+            self.tx_file_button.setText(os.path.basename(self.tx_file))
+
+    def choose_tx_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Fichier à émettre", RECORD_DIR,
+            "Audio (*.wav *.flac *.ogg);;Tous les fichiers (*)")
+        if path:
+            self.tx_file = path
+            self.tx_file_button.setText(os.path.basename(path))
+
+    def on_tx_level(self, value):
+        self.tx_level_label.setText(f"{value} %")
+        subprocess.run(["pactl", "set-sink-volume", self.radio_sink, f"{value}%"],
+                       capture_output=True)
+
+    def on_ptt(self, on):
+        if on:
+            self.start_tx()
+        else:
+            self.stop_tx()
+
+    def start_tx(self):
+        source = self.tx_source.currentData()
+        problem = None
+        if not self.civ:
+            problem = "Émission impossible sans CAT"
+        elif source == "file" and not self.tx_file:
+            problem = "Choisis d'abord un fichier à émettre"
+        if problem:
+            self.statusBar().showMessage(problem)
+            self._set_ptt_button(False)
+            return
+        self.civ.set_ptt(True, data=self.tx_digital)
+        if source == "file":
+            # un temps pour que la radio passe en émission avant le son
+            QtCore.QTimer.singleShot(400, self._play_tx_file)
+        else:
+            out = subprocess.run(
+                ["pactl", "load-module", "module-loopback", f"source={source}",
+                 f"sink={self.radio_sink}", "latency_msec=40",
+                 "source_dont_move=true", "sink_dont_move=true"],
+                capture_output=True, text=True)
+            self.tx_loopback = out.stdout.strip() or None
+        self.tx_limit = TX_TIMEOUT
+        if source == "file":
+            try:
+                with wave.open(self.tx_file) as w:
+                    length = w.getnframes() / w.getframerate()
+                self.tx_limit = max(TX_TIMEOUT, length + 15)
+            except (OSError, wave.Error, EOFError):
+                pass
+        self.tx_active = True
+        self.tx_started = time.monotonic()
+        self.tx_timer.start()
+        self._set_ptt_button(True)
+
+    def open_sstv(self):
+        if self.sstv_window is None:
+            self.sstv_window = SstvWindow(self)
+        self.sstv_window.show()
+        self.sstv_window.raise_()
+        self.sstv_window.activateWindow()
+
+    def transmit_file(self, path):
+        """Émet un fichier (utilisé par la fenêtre SSTV)."""
+        if self.tx_active:
+            return
+        self.tx_file = path
+        self.tx_digital = True
+        self.tx_source.setCurrentIndex(self.tx_source.findData("file"))
+        self.on_tx_source()
+        self.ptt_button.setChecked(True)
+
+    def _play_tx_file(self):
+        if self.tx_active:
+            self.tx_player = subprocess.Popen(
+                ["paplay", f"--device={self.radio_sink}", self.tx_file])
+
+    def stop_tx(self, reason=None):
+        if self.tx_player:
+            self.tx_player.terminate()
+            self.tx_player = None
+        if self.tx_loopback:
+            subprocess.run(["pactl", "unload-module", self.tx_loopback],
+                           capture_output=True)
+            self.tx_loopback = None
+        if self.civ:
+            self.civ.set_ptt(False)
+        self.tx_active = False
+        self.tx_digital = False
+        self.tx_timer.stop()
+        self._set_ptt_button(False)
+        self.tx_meter_label.setText("")
+        for meter, value in ((self.swr_meter, self.swr_value),
+                             (self.comp_meter, self.comp_value),
+                             (self.alc_meter, self.alc_value),
+                             (self.id_meter, self.id_value)):
+            meter.setValue(meter.minimum)
+            value.setText("")
+        if reason:
+            self.statusBar().showMessage(reason)
+
+    def _set_ptt_button(self, on):
+        self.ptt_button.blockSignals(True)
+        self.ptt_button.setChecked(on)
+        self.ptt_button.blockSignals(False)
+        self.ptt_button.setText("■ ARRÊTER" if on else "ÉMETTRE")
+        self.ptt_button.setStyleSheet(
+            "background: #c62828; color: white; font-weight: bold;" if on else "")
+
+    def check_tx(self):
+        elapsed = time.monotonic() - self.tx_started
+        if elapsed > self.tx_limit:
+            self.stop_tx(f"Émission coupée au bout de {elapsed / 60:.0f} min")
+        elif self.tx_player and self.tx_player.poll() is not None:
+            self.stop_tx("Fichier émis en entier")
+
+    def on_transmitting(self, tx):
+        if self.tx_active and not tx and time.monotonic() - self.tx_started > 2:
+            self.stop_tx("La radio n'émet pas (hors bande amateur ?)")
+
+    def on_tx_meters(self, po, swr, alc):
+        self.swr_meter.setValue(swr)
+        self.swr_value.setText(f"{piecewise(swr, SWR_POINTS):.1f}")
+        percent = alc * 100 / ALC_ZONE
+        self.alc_meter.setValue(percent)
+        self.alc_value.setText(f"{percent:.0f}")
+        self.tx_meter_label.setText(f"Po {piecewise(po, PO_POINTS):3.0f} %")
+
+    def on_drain(self, raw):
+        amps = piecewise(raw, ID_POINTS)
+        self.id_meter.setValue(amps)
+        self.id_value.setText(f"{amps:.1f} A")
+
+    def on_comp(self, raw):
+        db = piecewise(raw, COMP_POINTS)
+        self.comp_meter.setValue(db)
+        self.comp_value.setText(f"{db:.0f}")
 
     def on_tune(self):
         if self.civ:
@@ -1233,7 +1859,45 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.cursor_label.setText(f"{x:6.0f} Hz")
 
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QtCore.QEvent.Wheel:
+            pos = self.spec_plot.scene().views()[0].mapToScene(event.pos())
+            if self._x_at(pos) is not None and self.freq_hz is not None:
+                notches = event.angleDelta().y() / 120
+                if notches:
+                    self.on_tuned(round(notches) or (1 if notches > 0 else -1))
+                return True
+        elif (kind == QtCore.QEvent.MouseButtonPress
+              and event.button() == QtCore.Qt.LeftButton):
+            self.dragged = False
+            pos = self.spec_plot.scene().views()[0].mapToScene(event.pos())
+            if self.view == "rf" and self._x_at(pos) is not None and self.freq_hz:
+                low, high = self.spec_plot.vb.viewRange()[0]
+                width = self.spec_plot.vb.width()
+                if width > 0:
+                    self.drag = (event.pos().x(), (high - low) / width, self.freq_hz)
+        elif kind == QtCore.QEvent.MouseMove and self.drag:
+            x0, khz_per_px, start_hz = self.drag
+            dx = event.pos().x() - x0
+            if abs(dx) > 3:
+                self.dragged = True
+            if self.dragged:
+                # on tire la bande : vers la gauche, la fréquence monte
+                hz = start_hz - dx * khz_per_px * 1000
+                step = min(self.step_combo.currentData(), 100)
+                self.tune_to(int(round(hz / step) * step))
+                self.setCursor(QtCore.Qt.SizeHorCursor)
+            return False
+        elif kind == QtCore.QEvent.MouseButtonRelease and self.drag:
+            self.drag = None
+            self.unsetCursor()
+        return super().eventFilter(obj, event)
+
     def on_mouse_clicked(self, event):
+        if self.dragged:
+            self.dragged = False
+            return                      # fin d'un glisser, pas un clic
         x = self._x_at(event.scenePos())
         if x is None:
             return
@@ -1254,7 +1918,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Fréquence audio d'un signal RF, s'il tombe dans la bande en BLU."""
         if self.freq_hz is None:
             return None
-        mode = self.mode_combo.currentText()
+        mode = base_mode(self.mode_combo.currentText())
         audio = {"USB": rf_hz - self.freq_hz, "LSB": self.freq_hz - rf_hz}.get(mode)
         if audio is not None and 100 <= audio <= 3000:
             return audio
@@ -1262,7 +1926,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_decoder_pitch(self, hz):
         decoder = self.audio.decoder
-        if decoder is None:
+        if decoder is None or decoder.pitch is None:
             return
         if isinstance(decoder, CwDecoder):
             self.decoder_auto.setChecked(False)     # la note ne bouge plus
@@ -1285,8 +1949,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     "Cliquer entre les deux traces.",
         }.get(name, ""))
         self.rtty_invert.setVisible(name == "rtty")
-        self.decoder_led.setToolTip("Allumé quand le signal est manipulé"
-                                    if name == "cw" else "Allumé quand le signal est décodable")
+        self.decoder_auto.setVisible(name in ("cw", "psk31", "rtty"))
+        # FT8 : plusieurs lignes par créneau, il faut de la place
+        self.decoder_text.setFixedHeight(150 if name == "ft8" else 70)
+        if name == "ft8" and self.decoder_text.document().isEmpty():
+            self.decoder_text.setPlainText(
+                "UTC      dB   DT Freq  Message  (14.074, 7.074… en USB)\n")
+        self.decoder_led.setToolTip({
+            "cw": "Allumé quand le signal est manipulé",
+            "ft8": "Allumé pendant le décodage d'un créneau",
+        }.get(name, "Allumé quand le signal est décodable"))
         if decoder is None:
             self.decoder_info.setText("")
             self._set_decoder_led(False, False)
@@ -1302,23 +1974,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self.audio.decoder.auto_pitch = auto
 
     def _show_pitch_lines(self):
-        visible = self.audio.decoder is not None
+        decoder = self.audio.decoder
+        visible = decoder is not None and decoder.pitch is not None
         for line in self.pitch_lines:
             line.setVisible(visible)
 
     def _move_pitch_lines(self, audio_hz):
         """Repère du décodeur : en Hz audio, ou en kHz RF dans la vue RF."""
+        if audio_hz is None:            # FT8 : toute la bande, pas de repère
+            self._show_pitch_lines()
+            return
         x = audio_hz
         if self.view == "rf":
-            mode = self.mode_combo.currentText()
+            mode = base_mode(self.mode_combo.currentText())
             sign = {"USB": 1, "LSB": -1}.get(mode)
             if self.freq_hz is None or sign is None:
                 for line in self.pitch_lines:
                     line.setVisible(False)
                 return
             x = (self.freq_hz + sign * audio_hz) / 1000
+        decoder = self.audio.decoder
         for line in self.pitch_lines:
-            line.setVisible(self.audio.decoder is not None)
+            line.setVisible(decoder is not None and decoder.pitch is not None)
             line.setPos(x)
 
     def _set_decoder_led(self, signal, active):
@@ -1373,6 +2050,11 @@ class MainWindow(QtWidgets.QMainWindow):
         subprocess.Popen(["xdg-open", RECORD_DIR])
 
     def closeEvent(self, event):
+        self._remember_band()
+        if self.tx_active:
+            self.stop_tx()
+        if self.sstv_window:
+            self.sstv_window.close()
         self.audio.stop()
         if self.civ:
             self.civ.stop()
@@ -1397,13 +2079,26 @@ def main():
     parser.add_argument("--source", default=DEFAULT_SOURCE,
                         help="source PulseAudio/PipeWire du son de la radio")
     parser.add_argument("--port", default=DEFAULT_PORT, help="port série CI-V")
+    parser.add_argument("--sink", default=RADIO_SINK,
+                        help="sortie PulseAudio/PipeWire vers la radio (émission)")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--fmax", type=int, default=3500,
                         help="fréquence audio maximale affichée (Hz)")
     parser.add_argument("--no-cat", action="store_true",
                         help="ne pas ouvrir le port CI-V (s'il est pris par "
                              "un autre logiciel)")
+    parser.add_argument("--remote", metavar="HÔTE",
+                        help="radio branchée sur un autre PC du réseau, qui fait "
+                             "tourner cat_server.py et partage son son")
     args = parser.parse_args()
+    remote_modules = []
+    if args.remote:
+        try:
+            remote_modules = remote_audio(args.remote)
+        except RuntimeError as e:
+            sys.exit(f"Son du PC distant {args.remote} inaccessible : {e}")
+        args.source, args.sink = REMOTE_RX, REMOTE_TX
+        args.port = f"socket://{args.remote}:{CAT_TCP_PORT}"
 
     pg.setConfigOptions(imageAxisOrder="row-major", antialias=True,
                         background="#101418")
@@ -1422,7 +2117,9 @@ def main():
     wake = QtCore.QTimer()
     wake.timeout.connect(lambda: None)
     wake.start(200)
-    sys.exit(app.exec_())
+    code = app.exec_()
+    unload_remote_audio(remote_modules)
+    sys.exit(code)
 
 
 if __name__ == "__main__":
