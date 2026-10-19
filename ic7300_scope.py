@@ -43,6 +43,8 @@ def music_dir():
 
 RECORD_DIR = os.path.join(music_dir(), "IC-7300")
 
+ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+
 RATE = 48000
 FFT_SIZE = 4096
 HOP = 1600                      # 30 spectres par seconde
@@ -1318,6 +1320,9 @@ def main():
     pg.setConfigOptions(imageAxisOrder="row-major", antialias=True,
                         background="#101418")
     app = QtWidgets.QApplication(sys.argv)
+    app.setApplicationName("IC-7300 Scope")
+    app.setDesktopFileName("ic7300-scope")      # lien avec le menu des applications
+    app.setWindowIcon(QtGui.QIcon(ICON))
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
     window = MainWindow(args)

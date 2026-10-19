@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=IC-7300 Scope
+GenericName=Panadapter IC-7300
+Comment=Waterfall, S-mètre, VFO et décodeurs CW/PSK31 pour l'Icom IC-7300
+Exec=@DIR@/ic7300_scope.py
+Icon=ic7300-scope
+Terminal=false
+Categories=Network;HamRadio;
+Keywords=radio;icom;7300;waterfall;cw;psk31;
+StartupWMClass=IC-7300 Scope
