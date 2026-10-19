@@ -139,10 +139,22 @@ ALC_ZONE = 120                  # au-delà, l'ALC sort de sa zone sur la radio
 MIN_FREQ = 30_000               # couverture de réception de l'IC-7300
 MAX_FREQ = 74_800_000
 SPANS = [2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
-# zone écoutée autour de la fréquence affichée, en kHz (approximative)
-PASSBANDS = {"LSB": (-3.0, -0.1), "USB": (0.1, 3.0), "CW": (-0.25, 0.25),
-             "CW-R": (-0.25, 0.25), "RTTY": (-0.25, 0.25),
-             "RTTY-R": (-0.25, 0.25), "AM": (-3.0, 3.0), "FM": (-7.5, 7.5)}
+# largeur de FIL1, FIL2, FIL3 en kHz (réglages d'usine de l'IC-7300 ; chaque
+# mode a les siens : FIL3 vaut 1,8 kHz en BLU mais 3 kHz en AM)
+FILTER_WIDTHS = {"LSB": (3.0, 2.4, 1.8), "USB": (3.0, 2.4, 1.8),
+                 "AM": (9.0, 6.0, 3.0), "FM": (15.0, 10.0, 7.0),
+                 "CW": (1.2, 0.5, 0.25), "CW-R": (1.2, 0.5, 0.25),
+                 "RTTY": (2.4, 0.5, 0.25), "RTTY-R": (2.4, 0.5, 0.25)}
+
+
+def passband(mode, filt):
+    """Zone écoutée autour de la fréquence affichée, en kHz (approximative)."""
+    width = FILTER_WIDTHS.get(mode, (3.0, 3.0, 3.0))[(filt or 1) - 1]
+    if mode == "USB":
+        return 0.1, 0.1 + width
+    if mode == "LSB":
+        return -0.1 - width, -0.1
+    return -width / 2, width / 2
 
 
 def base_mode(name):
@@ -396,6 +408,7 @@ class CivReader(QtCore.QThread):
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
     monitor = QtCore.pyqtSignal(bool)           # MONI : écoute de sa propre émission
+    filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
     power = QtCore.pyqtSignal(int)              # puissance réglée, 0 à 255
     transmitting = QtCore.pyqtSignal(bool)      # la radio émet
     tx_meters = QtCore.pyqtSignal(int, int, int)  # puissance, ROS, ALC (0 à 255)
@@ -483,6 +496,14 @@ class CivReader(QtCore.QThread):
 
     def set_monitor(self, on):
         self._commands.put((0x16, 0x45, 0x01 if on else 0x00))
+
+    def set_filter(self, number):
+        """FIL1 à FIL3 : même mode, autre filtre (en mode data, celui du data)."""
+        self._filter = number
+        if self._data_state is not None and self._data_state[0]:
+            self._commands.put((0x1A, 0x06, 0x01, number))
+        elif self._mode_code is not None:
+            self._commands.put((0x06, self._mode_code, number))
 
     def set_power(self, level):
         self._pending_power = level
@@ -614,7 +635,9 @@ class CivReader(QtCore.QThread):
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
-                queries = [(0x15, 0x02)]
+                # état d'émission à chaque tour : PTT de la radio, pédale ou VOX
+                # détectés vite pour couper l'écoute PC (larsen)
+                queries = [(0x15, 0x02), (0x1C, 0x00)]
             n += 1
             for query in queries:
                 if not self._running:
@@ -688,6 +711,7 @@ class CivReader(QtCore.QThread):
             self._mode_code = data[0]
             if len(data) >= 2:
                 self._filter = data[1]
+                self.filter.emit(data[1])
             self._emit_mode()
         elif cmd == 0x25 and len(data) == 6 and data[0] == 0x01:
             self.other_frequency.emit(bcd_le(data[1:]))
@@ -963,6 +987,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.mode_combo.addItems(MODE_NAMES)
         self.mode_combo.setStyleSheet("font: bold 16pt; color: #ffd54a;")
         self.mode_combo.activated[str].connect(self.on_mode_selected)
+        self.filter_num = None
+        self.filter_buttons = QtWidgets.QButtonGroup(self)
+        filters = QtWidgets.QHBoxLayout()
+        filters.setSpacing(2)
+        for number in (1, 2, 3):
+            button = QtWidgets.QPushButton(f"FIL{number}")
+            button.setCheckable(True)
+            button.setMinimumWidth(44)
+            self.filter_buttons.addButton(button, number)
+            filters.addWidget(button)
+        self.filter_buttons.idClicked.connect(self.on_filter_selected)
+        self._filter_tooltips()
         self.cursor_label = QtWidgets.QLabel("")
         self.cursor_label.setStyleSheet("font: 12pt monospace;")
         top.addWidget(self.freq_label)
@@ -971,6 +1007,7 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.step_combo)
         top.addSpacing(20)
         top.addWidget(self.mode_combo)
+        top.addLayout(filters)
         top.addSpacing(20)
         top.addWidget(QtWidgets.QLabel("Aller à"))
         top.addWidget(self.freq_entry)
@@ -1364,7 +1401,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_started = 0.0
         self.tx_limit = TX_TIMEOUT          # s ; plus pour un fichier plus long
         self.tx_loopback = None             # module PipeWire micro → radio
-        self.tx_muted_listen = False        # écoute coupée le temps de l'émission micro
+        self.tx_muted_listen = False        # écoute coupée le temps d'une émission
+        self.radio_tx = False               # la radio émet (lu en CI-V)
         self.tx_player = None               # paplay du fichier
         self.tx_timer = QtCore.QTimer(self)
         self.tx_timer.setInterval(250)
@@ -1394,6 +1432,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.meter.connect(self.on_meter)
             self.civ.frequency.connect(self.on_frequency)
             self.civ.mode.connect(self.on_mode)
+            self.civ.filter.connect(self.on_filter)
             self.civ.other_frequency.connect(self.on_other_frequency)
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
@@ -1514,8 +1553,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.freq_hz is None:
             return
         f = self.freq_hz / 1000
-        low, high = PASSBANDS.get(base_mode(self.mode_combo.currentText()),
-                                  (-1.5, 1.5))
+        low, high = passband(base_mode(self.mode_combo.currentText()),
+                             self.filter_num)
         for line in self.tuned_lines:
             line.setPos(f)
         for band in self.passbands:
@@ -1570,7 +1609,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_mode(self, name):
         self.mode_combo.setCurrentText(name)
+        self._filter_tooltips()
         self._update_markers()
+
+    def on_filter(self, number):
+        self.filter_num = number
+        button = self.filter_buttons.button(number)
+        if button:
+            button.setChecked(True)
+        self._update_markers()
+
+    def on_filter_selected(self, number):
+        if self.civ:
+            self.civ.set_filter(number)
+        self.on_filter(number)
+
+    def _filter_tooltips(self):
+        mode = base_mode(self.mode_combo.currentText())
+        widths = FILTER_WIDTHS.get(mode)
+        for number in (1, 2, 3):
+            text = f"Filtre {number} de la radio"
+            if widths:
+                width = widths[number - 1]
+                text += (f" : {width:g} kHz en {mode}" if width >= 1
+                         else f" : {width * 1000:g} Hz en {mode}")
+                text += " (réglage d'usine)"
+            self.filter_buttons.button(number).setToolTip(text)
 
     def tune_to(self, hz):
         if not self.civ:
@@ -1601,6 +1665,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tune_to(hz)
 
     def on_mode_selected(self, name):
+        self._filter_tooltips()
         self._update_markers()
         if self.civ:
             self.civ.set_mode(name)
@@ -1706,10 +1771,6 @@ class MainWindow(QtWidgets.QMainWindow):
                  "source_dont_move=true", "sink_dont_move=true"],
                 capture_output=True, text=True)
             self.tx_loopback = out.stdout.strip() or None
-            # micro du PC : l'écoute radio → haut-parleurs reviendrait dans le
-            # micro (la radio renvoie son émission, surtout avec MONI) = larsen
-            self._pactl_stream("set-sink-input-mute", "1")
-            self.tx_muted_listen = True
         self.tx_limit = TX_TIMEOUT
         if source == "file":
             try:
@@ -1719,6 +1780,7 @@ class MainWindow(QtWidgets.QMainWindow):
             except (OSError, wave.Error, EOFError):
                 pass
         self.tx_active = True
+        self._mute_listen_for_tx(True)
         self.tx_started = time.monotonic()
         self.tx_timer.start()
         self._set_ptt_button(True)
@@ -1753,13 +1815,12 @@ class MainWindow(QtWidgets.QMainWindow):
             subprocess.run(["pactl", "unload-module", self.tx_loopback],
                            capture_output=True)
             self.tx_loopback = None
-        if self.tx_muted_listen:        # l'écoute revient comme l'utilisateur l'a laissée
-            self.on_mute(self.mute_check.isChecked())
-            self.tx_muted_listen = False
         if self.civ:
             self.civ.set_ptt(False)
         self.tx_active = False
         self.tx_digital = False
+        if not self.radio_tx:
+            self._mute_listen_for_tx(False)
         self.tx_timer.stop()
         self._set_ptt_button(False)
         self.tx_meter_label.setText("")
@@ -1788,8 +1849,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_tx("Fichier émis en entier")
 
     def on_transmitting(self, tx):
+        # émission lancée aussi par le PTT de la radio, une pédale ou le VOX
+        self.radio_tx = tx
+        if tx or not self.tx_active:
+            self._mute_listen_for_tx(tx)
         if self.tx_active and not tx and time.monotonic() - self.tx_started > 2:
             self.stop_tx("La radio n'émet pas (hors bande amateur ?)")
+
+    def _mute_listen_for_tx(self, tx):
+        """Écoute radio → PC coupée pendant toute émission : la radio renvoie
+        ce qu'elle émet (surtout avec MONI) et les haut-parleurs repasseraient
+        dans le micro, du PC ou de la radio = larsen. Remise ensuite comme
+        l'utilisateur l'a laissée."""
+        if tx == self.tx_muted_listen:
+            return
+        self.tx_muted_listen = tx
+        self.on_mute(True if tx else self.mute_check.isChecked())
 
     def on_tx_meters(self, po, swr, alc):
         self.swr_meter.setValue(swr)
