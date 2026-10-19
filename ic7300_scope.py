@@ -10,6 +10,7 @@ import json
 import math
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -23,6 +24,7 @@ import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
 from psk31_decoder import Psk31Decoder
+from rtty_decoder import RttyDecoder
 
 DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
 DEFAULT_PORT = ("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_"
@@ -42,6 +44,28 @@ def music_dir():
 
 
 RECORD_DIR = os.path.join(music_dir(), "IC-7300")
+
+# réglages du scope de la radio avant que l'appli les change ; le fichier
+# n'existe que pendant que l'appli tourne (ou si elle n'a pas pu les remettre)
+SCOPE_STATE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
+                           or os.path.expanduser("~/.config"),
+                           "ic7300-scope", "scope-origine.json")
+
+
+def load_scope_state():
+    try:
+        with open(SCOPE_STATE) as f:
+            state = json.load(f)
+        return state["mode"], state["speed"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def save_scope_state(mode, speed):
+    os.makedirs(os.path.dirname(SCOPE_STATE), exist_ok=True)
+    with open(SCOPE_STATE, "w") as f:
+        json.dump({"mode": mode, "speed": speed}, f)
+
 
 ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
 
@@ -147,7 +171,8 @@ class AudioReader(QtCore.QThread):
         self.source = source
         self.proc = None
         self._running = True
-        self.decoders = {"cw": CwDecoder(RATE), "psk31": Psk31Decoder(RATE)}
+        self.decoders = {"cw": CwDecoder(RATE), "psk31": Psk31Decoder(RATE),
+                         "rtty": RttyDecoder(RATE)}
         self.decoder = None             # décodeur choisi, ou None
         self._record_lock = threading.Lock()
         self._record = None
@@ -226,6 +251,7 @@ class CivReader(QtCore.QThread):
     other_frequency = QtCore.pyqtSignal(int)     # VFO non sélectionné
     other_mode = QtCore.pyqtSignal(str)
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
+    tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
     scope = QtCore.pyqtSignal(object, int, int) # balayage, bords bas/haut (Hz)
     span = QtCore.pyqtSignal(int)               # demi-largeur du scope (Hz)
     status = QtCore.pyqtSignal(str)
@@ -238,7 +264,8 @@ class CivReader(QtCore.QThread):
         self._pending_freq = None
         self._pending_mode = None
         self._pending_af = None
-        self._vfo_ops = queue.Queue()
+        self._commands = queue.Queue()
+        self._tuner = None
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
         self._pending_span = None
         self._wave = None
@@ -281,7 +308,14 @@ class CivReader(QtCore.QThread):
 
     def vfo_operation(self, code):
         """0x00 VFO A, 0x01 VFO B, 0xA0 A=B, 0xB0 échange A/B."""
-        self._vfo_ops.put(code)
+        self._commands.put((0x07, code))
+
+    def tune(self):
+        """Lance l'accord de la boîte d'accord interne (la radio émet)."""
+        self._commands.put((0x1C, 0x01, 0x02))
+
+    def set_atu(self, on):
+        self._commands.put((0x1C, 0x01, 0x01 if on else 0x00))
 
     def _poll(self, ser):
         # La radio ignore une commande reçue pendant qu'elle répond à la
@@ -299,8 +333,8 @@ class CivReader(QtCore.QThread):
                 # sans le filtre, la radio repasse sur son filtre par défaut
                 self._command(ser, 0x06, code, self._filter)
                 changed = True
-            while not self._vfo_ops.empty():
-                self._command(ser, 0x07, self._vfo_ops.get())
+            while not self._commands.empty():
+                self._command(ser, *self._commands.get())
                 changed = True
             level, self._pending_af = self._pending_af, None
             if level is not None:
@@ -314,7 +348,9 @@ class CivReader(QtCore.QThread):
                 n = 0
             if n % 10 == 0:
                 queries = [(0x03,), (0x04,), (0x25, 0x01), (0x26, 0x01),
-                           (0x14, 0x01), (0x15, 0x02)]
+                           (0x14, 0x01), (0x1C, 0x01), (0x15, 0x02)]
+            elif self._tuner == 0x02:       # accord en cours : on suit de près
+                queries = [(0x1C, 0x01), (0x15, 0x02)]
             else:
                 queries = [(0x15, 0x02)]
             n += 1
@@ -325,8 +361,14 @@ class CivReader(QtCore.QThread):
     def _scope_setup(self, ser):
         """Scope de la radio centré sur la fréquence, données envoyées en CI-V."""
         if self._scope_mode is None:
-            self._transact(ser, (0x27, 0x14, 0x00), (0x27,))
-            self._transact(ser, (0x27, 0x1A, 0x00), (0x27,))
+            saved = load_scope_state()
+            if saved:                   # la dernière session n'a pas pu les remettre
+                self._scope_mode, self._scope_speed = saved
+            else:
+                self._transact(ser, (0x27, 0x14, 0x00), (0x27,))
+                self._transact(ser, (0x27, 0x1A, 0x00), (0x27,))
+                if self._scope_mode is not None and self._scope_speed is not None:
+                    save_scope_state(self._scope_mode, self._scope_speed)
         self._command(ser, 0x27, 0x14, 0x00, 0x00)      # mode centré
         self._command(ser, 0x27, 0x1A, 0x00, 0x00)      # balayage rapide
         self._command(ser, 0x27, 0x11, 0x01)            # données vers le CI-V
@@ -338,6 +380,10 @@ class CivReader(QtCore.QThread):
             self._command(ser, 0x27, 0x14, 0x00, self._scope_mode)
         if self._scope_speed is not None:
             self._command(ser, 0x27, 0x1A, 0x00, self._scope_speed)
+        try:
+            os.remove(SCOPE_STATE)
+        except OSError:
+            pass
 
     def _command(self, ser, *payload):
         reply = self._transact(ser, payload, (0xFB, 0xFA))
@@ -380,6 +426,9 @@ class CivReader(QtCore.QThread):
             self.other_frequency.emit(bcd_le(data[1:]))
         elif cmd == 0x26 and len(data) >= 2 and data[0] == 0x01:
             self.other_mode.emit(MODES.get(data[1], f"mode {data[1]:02X}"))
+        elif cmd == 0x1C and len(data) == 2 and data[0] == 0x01:
+            self._tuner = data[1]
+            self.tuner.emit(data[1])
         elif cmd == 0x14 and len(data) == 3 and data[0] == 0x01:
             self.af_gain.emit(bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x02:
@@ -684,6 +733,16 @@ class MainWindow(QtWidgets.QMainWindow):
             button.clicked.connect(lambda _, c=code: self.on_vfo_operation(c))
             vfo.addWidget(button, 2, col)
         vfo.addWidget(self.other_label, 3, 0, 1, 4)
+        self.tune_button = QtWidgets.QPushButton("TUNE")
+        self.tune_button.setToolTip("Accorde l'antenne avec la boîte d'accord "
+                                    "interne. La radio émet une porteuse.")
+        self.tune_button.clicked.connect(self.on_tune)
+        self.atu_button = QtWidgets.QPushButton("ATU")
+        self.atu_button.setCheckable(True)
+        self.atu_button.setToolTip("Boîte d'accord interne en service")
+        self.atu_button.clicked.connect(self.on_atu)
+        vfo.addWidget(self.tune_button, 4, 0, 1, 2)
+        vfo.addWidget(self.atu_button, 4, 2, 1, 2)
         header = QtWidgets.QHBoxLayout()
         header.addLayout(left, stretch=1)
         header.addSpacing(10)
@@ -824,8 +883,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_combo.addItem("Aucun", None)
         self.decoder_combo.addItem("CW", "cw")
         self.decoder_combo.addItem("PSK31", "psk31")
+        self.decoder_combo.addItem("RTTY 45", "rtty")
         self.decoder_auto = QtWidgets.QCheckBox("Calage auto")
         self.decoder_auto.setChecked(True)
+        self.rtty_invert = QtWidgets.QCheckBox("Inverser")
+        self.rtty_invert.setToolTip("Mark sur la tonalité haute. À essayer si "
+                                    "le texte reste incohérent.")
+        self.rtty_invert.toggled.connect(self.on_rtty_invert)
         self.decoder_led = QtWidgets.QLabel("●")
         self.decoder_info = QtWidgets.QLabel("")
         self.decoder_info.setStyleSheet("font: 11pt monospace;")
@@ -833,6 +897,7 @@ class MainWindow(QtWidgets.QMainWindow):
         decoder_row.addWidget(QtWidgets.QLabel("Décodeur"))
         decoder_row.addWidget(self.decoder_combo)
         decoder_row.addWidget(self.decoder_auto)
+        decoder_row.addWidget(self.rtty_invert)
         decoder_row.addWidget(self.decoder_led)
         decoder_row.addWidget(self.decoder_info)
         decoder_row.addStretch()
@@ -890,6 +955,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.other_frequency.connect(self.on_other_frequency)
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
+            self.civ.tuner.connect(self.on_tuner)
             self.civ.scope.connect(self.on_scope)
             self.civ.span.connect(self.on_span)
             self.civ.status.connect(self.statusBar().showMessage)
@@ -1090,6 +1156,22 @@ class MainWindow(QtWidgets.QMainWindow):
         self._show_other()
         self.civ.vfo_operation(code)
 
+    def on_tune(self):
+        if self.civ:
+            self.civ.tune()
+            self.on_tuner(0x02)
+
+    def on_atu(self, on):
+        if self.civ:
+            self.civ.set_atu(on)
+
+    def on_tuner(self, state):
+        self.atu_button.setChecked(state in (0x01, 0x02))
+        tuning = state == 0x02
+        self.tune_button.setText("TUNE…" if tuning else "TUNE")
+        self.tune_button.setStyleSheet(
+            "background: #c62828; color: white; font-weight: bold;" if tuning else "")
+
     def _pactl_stream(self, *args):
         """Commande pactl sur le flux d'écoute ; le retrouve s'il a changé."""
         for attempt in range(2):
@@ -1162,7 +1244,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         # vue RF : en PSK31, un clic dans la bande écoutée choisit le signal
         audio = self._audio_offset(x * 1000)
-        if decoder == "psk31" and audio is not None:
+        if decoder in ("psk31", "rtty") and audio is not None:
             self._set_decoder_pitch(audio)
             return
         step = self.step_combo.currentData()
@@ -1199,7 +1281,10 @@ class MainWindow(QtWidgets.QMainWindow):
                   "Clic sur le spectre audio pour la choisir.",
             "psk31": "Se recale sur le signal à ± 25 Hz du clic, puis le suit. "
                      "Clic sur le spectre audio, ou en RF dans la bande écoutée.",
+            "rtty": "Se recale sur la paire de tonalités à ± 60 Hz du clic. "
+                    "Cliquer entre les deux traces.",
         }.get(name, ""))
+        self.rtty_invert.setVisible(name == "rtty")
         self.decoder_led.setToolTip("Allumé quand le signal est manipulé"
                                     if name == "cw" else "Allumé quand le signal est décodable")
         if decoder is None:
@@ -1208,6 +1293,9 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._move_pitch_lines(decoder.pitch)
         self._show_pitch_lines()
+
+    def on_rtty_invert(self, inverted):
+        self.audio.decoders["rtty"].inverted = inverted
 
     def on_decoder_auto(self, auto):
         if self.audio.decoder:
@@ -1327,6 +1415,13 @@ def main():
     app.setPalette(dark_palette())
     window = MainWindow(args)
     window.show()
+    # kill, Ctrl+C ou fin de session : fermer la fenêtre pour remettre la
+    # radio comme on l'a trouvée ; le minuteur laisse Python voir le signal
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, lambda *_: window.close())
+    wake = QtCore.QTimer()
+    wake.timeout.connect(lambda: None)
+    wake.start(200)
     sys.exit(app.exec_())
 
 
