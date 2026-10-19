@@ -25,7 +25,7 @@ import pyqtgraph as pg
 from cw_decoder import CwDecoder
 from psk31_decoder import Psk31Decoder
 from rtty_decoder import RttyDecoder
-from ft8_decoder import Ft8Decoder
+from ft8_decoder import Ft4Decoder, Ft8Decoder
 from sstv_window import SstvWindow
 
 DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
@@ -306,7 +306,8 @@ class AudioReader(QtCore.QThread):
         self.proc = None
         self._running = True
         self.decoders = {"cw": CwDecoder(RATE), "psk31": Psk31Decoder(RATE),
-                         "rtty": RttyDecoder(RATE), "ft8": Ft8Decoder(RATE)}
+                         "rtty": RttyDecoder(RATE), "ft8": Ft8Decoder(RATE),
+                         "ft4": Ft4Decoder(RATE)}
         self.decoder = None             # décodeur choisi, ou None
         self.sstv = None                # décodeur SSTV quand sa fenêtre est ouverte
         self._record_lock = threading.Lock()
@@ -354,8 +355,10 @@ class AudioReader(QtCore.QThread):
                 text = decoder.feed(x)
                 if text:
                     self.decoded.emit(text)
-                self.decoder_state.emit(decoder.status(), decoder.pitch or 0.0,
-                                        decoder.has_signal, decoder.key_down)
+                # types Python purs : un numpy.bool fait planter emit() et
+                # arrête ce fil, donc tous les décodeurs
+                self.decoder_state.emit(decoder.status(), float(decoder.pitch or 0.0),
+                                        bool(decoder.has_signal), bool(decoder.key_down))
 
     def start_recording(self, path):
         """Enregistre le son de la radio tel quel : WAV mono 16 bits."""
@@ -376,6 +379,7 @@ class AudioReader(QtCore.QThread):
     def stop(self):
         self.stop_recording()
         self.decoders["ft8"].close()
+        self.decoders["ft4"].close()
         self._running = False
         if self.proc:
             self.proc.terminate()
@@ -391,6 +395,7 @@ class CivReader(QtCore.QThread):
     other_mode = QtCore.pyqtSignal(str)
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
+    monitor = QtCore.pyqtSignal(bool)           # MONI : écoute de sa propre émission
     power = QtCore.pyqtSignal(int)              # puissance réglée, 0 à 255
     transmitting = QtCore.pyqtSignal(bool)      # la radio émet
     tx_meters = QtCore.pyqtSignal(int, int, int)  # puissance, ROS, ALC (0 à 255)
@@ -475,6 +480,9 @@ class CivReader(QtCore.QThread):
 
     def set_atu(self, on):
         self._commands.put((0x1C, 0x01, 0x01 if on else 0x00))
+
+    def set_monitor(self, on):
+        self._commands.put((0x16, 0x45, 0x01 if on else 0x00))
 
     def set_power(self, level):
         self._pending_power = level
@@ -601,7 +609,8 @@ class CivReader(QtCore.QThread):
             elif n % 10 == 0:
                 queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
                            (0x14, 0x01), (0x14, 0x0A), (0x1C, 0x00),
-                           (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x15, 0x02)]
+                           (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x16, 0x45),
+                           (0x15, 0x02)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
@@ -687,6 +696,8 @@ class CivReader(QtCore.QThread):
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x01:
             self._tuner = data[1]
             self.tuner.emit(data[1])
+        elif cmd == 0x16 and len(data) == 2 and data[0] == 0x45:
+            self.monitor.emit(data[1] == 0x01)
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x00:
             self._tx = data[1] == 0x01
             self.transmitting.emit(self._tx)
@@ -1050,8 +1061,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.atu_button.setCheckable(True)
         self.atu_button.setToolTip("Boîte d'accord interne en service")
         self.atu_button.clicked.connect(self.on_atu)
+        self.monitor_button = QtWidgets.QPushButton("MONI")
+        self.monitor_button.setCheckable(True)
+        self.monitor_button.setToolTip("Moniteur de la radio : on entend sa propre "
+                                       "émission (niveau réglé dans la radio, MONI)")
+        self.monitor_button.clicked.connect(self.on_monitor)
         vfo.addWidget(self.tune_button, 4, 0, 1, 2)
-        vfo.addWidget(self.atu_button, 4, 2, 1, 2)
+        vfo.addWidget(self.atu_button, 4, 2)
+        vfo.addWidget(self.monitor_button, 4, 3)
 
         # Bandes : la radio retrouve la dernière fréquence utilisée sur la bande
         try:
@@ -1222,6 +1239,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_combo.addItem("PSK31", "psk31")
         self.decoder_combo.addItem("RTTY 45", "rtty")
         self.decoder_combo.addItem("FT8", "ft8")
+        self.decoder_combo.addItem("FT4", "ft4")
         self.decoder_auto = QtWidgets.QCheckBox("Calage auto")
         self.decoder_auto.setChecked(True)
         self.rtty_invert = QtWidgets.QCheckBox("Inverser")
@@ -1346,6 +1364,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_started = 0.0
         self.tx_limit = TX_TIMEOUT          # s ; plus pour un fichier plus long
         self.tx_loopback = None             # module PipeWire micro → radio
+        self.tx_muted_listen = False        # écoute coupée le temps de l'émission micro
         self.tx_player = None               # paplay du fichier
         self.tx_timer = QtCore.QTimer(self)
         self.tx_timer.setInterval(250)
@@ -1379,6 +1398,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
             self.civ.tuner.connect(self.on_tuner)
+            self.civ.monitor.connect(self.monitor_button.setChecked)
             self.civ.power.connect(self.on_power)
             self.civ.transmitting.connect(self.on_transmitting)
             self.civ.tx_meters.connect(self.on_tx_meters)
@@ -1686,6 +1706,10 @@ class MainWindow(QtWidgets.QMainWindow):
                  "source_dont_move=true", "sink_dont_move=true"],
                 capture_output=True, text=True)
             self.tx_loopback = out.stdout.strip() or None
+            # micro du PC : l'écoute radio → haut-parleurs reviendrait dans le
+            # micro (la radio renvoie son émission, surtout avec MONI) = larsen
+            self._pactl_stream("set-sink-input-mute", "1")
+            self.tx_muted_listen = True
         self.tx_limit = TX_TIMEOUT
         if source == "file":
             try:
@@ -1729,6 +1753,9 @@ class MainWindow(QtWidgets.QMainWindow):
             subprocess.run(["pactl", "unload-module", self.tx_loopback],
                            capture_output=True)
             self.tx_loopback = None
+        if self.tx_muted_listen:        # l'écoute revient comme l'utilisateur l'a laissée
+            self.on_mute(self.mute_check.isChecked())
+            self.tx_muted_listen = False
         if self.civ:
             self.civ.set_ptt(False)
         self.tx_active = False
@@ -1790,6 +1817,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_atu(self, on):
         if self.civ:
             self.civ.set_atu(on)
+
+    def on_monitor(self, on):
+        if self.civ:
+            self.civ.set_monitor(on)
 
     def on_tuner(self, state):
         self.atu_button.setChecked(state in (0x01, 0x02))
@@ -1950,14 +1981,18 @@ class MainWindow(QtWidgets.QMainWindow):
         }.get(name, ""))
         self.rtty_invert.setVisible(name == "rtty")
         self.decoder_auto.setVisible(name in ("cw", "psk31", "rtty"))
-        # FT8 : plusieurs lignes par créneau, il faut de la place
-        self.decoder_text.setFixedHeight(150 if name == "ft8" else 70)
+        # FT8/FT4 : plusieurs lignes par créneau, il faut de la place
+        self.decoder_text.setFixedHeight(150 if name in ("ft8", "ft4") else 70)
+        if name == "ft4" and self.decoder_text.document().isEmpty():
+            self.decoder_text.setPlainText(
+                "UTC      dB   DT Freq  Message  (14.080, 7.0475… en USB)\n")
         if name == "ft8" and self.decoder_text.document().isEmpty():
             self.decoder_text.setPlainText(
                 "UTC      dB   DT Freq  Message  (14.074, 7.074… en USB)\n")
         self.decoder_led.setToolTip({
             "cw": "Allumé quand le signal est manipulé",
             "ft8": "Allumé pendant le décodage d'un créneau",
+            "ft4": "Allumé pendant le décodage d'un créneau",
         }.get(name, "Allumé quand le signal est décodable"))
         if decoder is None:
             self.decoder_info.setText("")
@@ -1981,7 +2016,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _move_pitch_lines(self, audio_hz):
         """Repère du décodeur : en Hz audio, ou en kHz RF dans la vue RF."""
-        if audio_hz is None:            # FT8 : toute la bande, pas de repère
+        if audio_hz is None:            # FT8/FT4 : toute la bande, pas de repère
             self._show_pitch_lines()
             return
         x = audio_hz

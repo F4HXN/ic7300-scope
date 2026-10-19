@@ -1,6 +1,7 @@
-"""Décodage FT8 avec jt9, le moteur de WSJT-X.
+"""Décodage FT8 et FT4 avec jt9, le moteur de WSJT-X.
 
-Le son est découpé en créneaux de 15 s calés sur l'heure UTC. À la fin de
+Le son est découpé en créneaux calés sur l'heure UTC (15 s en FT8, 7,5 s
+en FT4). À la fin de
 chaque créneau, il est ramené à 12 kHz, écrit en WAV et confié à jt9 dans un
 fil à part ; les messages décodés reviennent au prochain appel de feed().
 L'horloge du PC doit être à l'heure à moins d'une seconde près.
@@ -19,11 +20,10 @@ import wave
 import numpy as np
 from scipy.signal import resample_poly
 
-SLOT = 15                       # secondes
 JT9_RATE = 12000
 DEPTH = 3                       # profondeur de décodage de jt9 (1 à 3)
-# 123015 -12  0.3 1200 ~  CQ F4HXN JN18
-LINE = re.compile(r"^(\d{6})\s+(-?\d+)\s+(-?[\d.]+)\s+(\d+)\s+~\s+(.*?)\s*$")
+# 123015 -12  0.3 1200 ~  CQ F4HXN JN18      (FT4 : « + » au lieu de « ~ »)
+LINE = re.compile(r"^(\d{6})\s+(-?\d+)\s+(-?[\d.]+)\s+(\d+)\s+[~+]\s+(.*?)\s*$")
 
 
 def clock_synchronized():
@@ -38,6 +38,9 @@ def clock_synchronized():
 
 class Ft8Decoder:
     pitch = None                    # décode toute la bande, pas une note
+    SLOT = 15                       # secondes
+    MODE_FLAG = "-8"                # option de mode de jt9
+    NAME = "FT8"
 
     def __init__(self, rate):
         self.rate = rate
@@ -75,7 +78,7 @@ class Ft8Decoder:
             hhmmss = time.strftime("%H:%M:%S", time.gmtime(self._last_slot))
             parts.append(f"{hhmmss} UTC : {self._last_count} message(s)")
         elif self._slot is not None:
-            left = self._slot + SLOT - time.time()
+            left = self._slot + self.SLOT - time.time()
             parts.append(f"premier créneau dans {max(left, 0):.0f} s")
         if self.synchronized is False:
             parts.append("horloge non synchronisée !")
@@ -98,7 +101,7 @@ class Ft8Decoder:
             self._slot = None
         self._buffer = np.concatenate([self._buffer, samples])
         self._buffer_end = now
-        slot = now // SLOT * SLOT
+        slot = now // self.SLOT * self.SLOT
         if self._slot is None:
             self._slot = slot       # créneau entamé : on attend le suivant
         elif slot > self._slot:
@@ -115,10 +118,10 @@ class Ft8Decoder:
         return "".join(out)
 
     def _finish_slot(self, start):
-        """Extrait [start, start + 15 s) du tampon et lance jt9 dessus."""
+        """Extrait [start, start + SLOT) du tampon et lance jt9 dessus."""
         first_time = self._buffer_end - len(self._buffer) / self.rate
         begin = int(round((start - first_time) * self.rate))
-        end = begin + SLOT * self.rate
+        end = begin + int(self.SLOT * self.rate)
         if begin < 0 or end > len(self._buffer):
             return                  # créneau incomplet (démarrage, coupure)
         audio = self._buffer[begin:end]
@@ -145,9 +148,9 @@ class Ft8Decoder:
                 w.setframerate(JT9_RATE)
                 w.writeframes(pcm.tobytes())
             result = subprocess.run(
-                ["jt9", "-8", "-d", str(DEPTH), "-p", str(SLOT),
+                ["jt9", self.MODE_FLAG, "-d", str(DEPTH), "-p", str(int(self.SLOT)),
                  "-a", self._dir, "-t", self._dir, path],
-                capture_output=True, text=True, timeout=SLOT * 2, cwd=self._dir)
+                capture_output=True, text=True, timeout=self.SLOT * 2, cwd=self._dir)
             os.remove(path)
             lines = []
             for line in result.stdout.splitlines():
@@ -162,7 +165,7 @@ class Ft8Decoder:
             for _, line in sorted(lines):
                 self._results.put(line)
         except (OSError, subprocess.SubprocessError) as e:
-            self._results.put(f"[FT8] erreur jt9 : {e}\n")
+            self._results.put(f"[{self.NAME}] erreur jt9 : {e}\n")
         finally:
             with self._lock:
                 self._running -= 1
@@ -170,3 +173,10 @@ class Ft8Decoder:
     def close(self):
         self._jobs.put(None)
         shutil.rmtree(self._dir, ignore_errors=True)
+
+
+class Ft4Decoder(Ft8Decoder):
+    """FT4 : même chaîne, créneaux de 7,5 s (un sur deux tombe à hh:mm:ss,5)."""
+    SLOT = 7.5
+    MODE_FLAG = "-5"
+    NAME = "FT4"
