@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=IC-7300 Serveur
+GenericName=Pilotage à distance de l'IC-7300
+Comment=Démarre ou arrête le partage de la radio sur le réseau local
+Exec=@DIR@/serveur.sh
+Icon=ic7300-serveur
+Terminal=false
+Categories=Network;HamRadio;
+Keywords=radio;icom;7300;serveur;réseau;remote;
