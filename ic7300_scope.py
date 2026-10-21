@@ -1468,6 +1468,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.view = None
         self.scope_edges = None
+        self.scope_points = 0
+        self.audio_db = None
         self.view_combo.currentIndexChanged.connect(self.on_view_changed)
         self.on_view_changed()
 
@@ -1589,6 +1591,7 @@ class MainWindow(QtWidgets.QMainWindow):
             else:
                 self._reset_waterfall(n, low / 1000, high / 1000)
             self.scope_edges = (low, high)
+            self.scope_points = n
             self.avg = None
         self.avg = points if self.avg is None else 0.5 * self.avg + 0.5 * points
         step = (high - low) / n
@@ -1620,6 +1623,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.wf_low = value
 
     def on_spectrum(self, db, rms):
+        # spectre audio gardé aussi en vue RF : sert à caler le décodeur au clic
+        self.audio_db = db if self.audio_db is None else 0.8 * self.audio_db + 0.2 * db
         self.level_meter.setValue(rms)
         self.level_value.setText(f"{rms:5.1f}")
         if self.view != "audio":
@@ -2102,6 +2107,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # vue RF : en PSK31, un clic dans la bande écoutée choisit le signal
         audio = self._audio_offset(x * 1000)
         if decoder in ("psk31", "rtty") and audio is not None:
+            if decoder == "psk31" and self.scope_points:
+                # un point du scope fait jusqu'à 100 Hz (±25 kHz) : on cherche
+                # le signal le plus fort autour du clic dans le spectre audio
+                point = (self.scope_edges[1] - self.scope_edges[0]) / self.scope_points
+                audio = self._strongest_near(audio, max(25, 1.5 * point))
             self._set_decoder_pitch(audio)
             return
         step = self.step_combo.currentData()
@@ -2116,6 +2126,26 @@ class MainWindow(QtWidgets.QMainWindow):
         if audio is not None and 100 <= audio <= 3000:
             return audio
         return None
+
+    def _strongest_near(self, hz, tolerance):
+        """Centre du signal le plus fort à ± tolerance de hz (spectre audio).
+
+        La puissance est lissée sur ± 20 Hz : les deux raies d'un signal
+        PSK31 au repos ne font qu'un pic, centré sur sa fréquence."""
+        if self.audio_db is None:
+            return hz
+        power = 10 ** (self.audio_db / 10)
+        half = max(int(20 / BIN_HZ), 1)
+        smooth = np.convolve(power, np.ones(2 * half + 1), mode="same")
+        lo = max(int((hz - tolerance) / BIN_HZ), 1)
+        hi = min(int((hz + tolerance) / BIN_HZ) + 2, len(smooth))
+        if hi <= lo:
+            return hz
+        best = lo + int(np.argmax(smooth[lo:hi]))
+        floor = np.median(smooth[int(200 / BIN_HZ):int(3000 / BIN_HZ)])
+        if smooth[best] < 4 * floor:        # rien qui dépasse le bruit
+            return hz
+        return best * BIN_HZ
 
     def _set_decoder_pitch(self, hz):
         decoder = self.audio.decoder
