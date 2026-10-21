@@ -419,6 +419,8 @@ class CivReader(QtCore.QThread):
     drain = QtCore.pyqtSignal(int)              # courant de l'ampli (Id), 0 à 255
     scope = QtCore.pyqtSignal(object, int, int) # balayage, bords bas/haut (Hz)
     span = QtCore.pyqtSignal(int)               # demi-largeur du scope (Hz)
+    powered = QtCore.pyqtSignal(bool)           # la radio répond (en marche)
+    squelch_open = QtCore.pyqtSignal(bool)      # squelch ouvert (signal présent)
     status = QtCore.pyqtSignal(str)
 
     def __init__(self, port, baud):
@@ -439,6 +441,10 @@ class CivReader(QtCore.QThread):
         self._break_in = None           # BK-IN : 0 arrêt, 1 semi, 2 full
         self._pending_usb_mod = None
         self._pending_ptt = None
+        self._pending_onoff = None      # mise en marche (True) ou arrêt (False)
+        self._powered = None            # la radio répond-elle ?
+        self._last_reply = 0.0
+        self._squelch = None
         self._ptt = False               # émission demandée par l'appli
         self._tx = False                # la radio dit qu'elle émet
         self._data_state = None         # (data, filtre) lu sur la radio
@@ -460,6 +466,7 @@ class CivReader(QtCore.QThread):
                                            exclusive=True) as ser:
                     self.status.emit("CAT connecté")
                     self._buf = bytearray()
+                    self._last_reply = time.monotonic()
                     self._recover(ser)
                     self._scope_setup(ser)
                     self._poll(ser)
@@ -534,6 +541,31 @@ class CivReader(QtCore.QThread):
     def stop_cw(self):
         self._commands.put((0x17, 0xFF))
 
+    def set_onoff(self, on):
+        """Met la radio en marche (True) ou l'arrête (False)."""
+        self._pending_onoff = on
+
+    def _power_on(self, ser):
+        # radio arrêtée : une suite de 0xFE réveille son port avant la commande
+        # (150 à 115200 bauds selon Icom ; un peu plus, comme Hamlib) ; la
+        # radio ne l'accepte pas si son menu CI-V USB Baud Rate est sur Auto
+        self.status.emit("Mise en marche de la radio…")
+        for _ in range(3):
+            ser.write(bytes([0xFE] * 175))
+            ser.flush()
+            if self._transact(ser, (0x18, 0x01), (0xFB, 0xFA)) == 0xFB:
+                return
+            time.sleep(0.5)
+        self.status.emit("La radio ne répond pas à la mise en marche : menu "
+                         "CI-V USB Baud Rate sur 115200 (pas Auto) ?")
+
+    def _power_off(self, ser):
+        if self._ptt or self._tx:
+            self._command(ser, 0x1C, 0x00, 0x00)
+            self._release(ser)
+        self._transact(ser, (0x18, 0x00), (0xFB, 0xFA))
+        self.status.emit("Radio arrêtée")
+
     def set_usb_mod(self, level):
         """Gain de l'entrée USB à l'émission (menu USB MOD Level), 0 à 255."""
         self._pending_usb_mod = level
@@ -604,6 +636,22 @@ class CivReader(QtCore.QThread):
         n = 0
         while self._running:
             changed = False
+            onoff, self._pending_onoff = self._pending_onoff, None
+            if onoff is True:
+                self._power_on(ser)
+                changed = True
+            elif onoff is False:
+                self._power_off(ser)
+                self._last_reply = 0.0      # arrêtée tout de suite
+                changed = True
+            # sans réponse depuis 2 s, la radio est arrêtée ; à sa remise en
+            # marche, elle a oublié l'envoi du scope en CI-V
+            powered = time.monotonic() - self._last_reply < 2.0
+            if powered != self._powered:
+                if powered and self._powered is False:
+                    self._scope_setup(ser)
+                self._powered = powered
+                self.powered.emit(powered)
             ptt, self._pending_ptt = self._pending_ptt, None
             if ptt is True and not self._ptt:
                 self._key(ser)
@@ -656,7 +704,9 @@ class CivReader(QtCore.QThread):
                 self._transact(ser, (0x27, 0x15, 0x00), (0x27,))
             if changed:
                 n = 0
-            if self._ptt or self._tx:       # en émission : puissance, ROS, ALC
+            if not self._powered:           # radio arrêtée : on guette son réveil
+                queries = [(0x03,)]
+            elif self._ptt or self._tx:     # en émission : puissance, ROS, ALC
                 queries = [(0x1C, 0x00), (0x15, 0x11), (0x15, 0x12), (0x15, 0x13),
                            (0x15, 0x14), (0x15, 0x16)]
                 if n % 10 == 0:
@@ -665,13 +715,14 @@ class CivReader(QtCore.QThread):
                 queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
                            (0x14, 0x01), (0x14, 0x02), (0x14, 0x03), (0x14, 0x0A), (0x1C, 0x00),
                            (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x16, 0x45),
-                           (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47)]
+                           (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47), (0x15, 0x01)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
                 # état d'émission à chaque tour : PTT de la radio, pédale ou VOX
                 # détectés vite pour couper l'écoute PC (larsen)
-                queries = [(0x15, 0x02), (0x1C, 0x00)]
+                # squelch aussi : l'écoute PC suit son ouverture
+                queries = [(0x15, 0x02), (0x1C, 0x00), (0x15, 0x01)]
             n += 1
             for query in queries:
                 if not self._running:
@@ -718,6 +769,9 @@ class CivReader(QtCore.QThread):
                 end = self._buf.index(0xFD)
                 cmd = self._handle(bytes(self._buf[:end]))
                 del self._buf[:end + 1]
+                # arrêtée, la radio répond encore NG (0xFA) : pas en marche
+                if cmd is not None and cmd != 0xFA:
+                    self._last_reply = time.monotonic()
                 if cmd in expected:
                     return cmd
         return None
@@ -786,6 +840,10 @@ class CivReader(QtCore.QThread):
             self.level.emit(data[0], bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x02:
             self.meter.emit(bcd_be(data[1:]))
+        elif cmd == 0x15 and len(data) == 2 and data[0] == 0x01:
+            if data[1] != self._squelch:
+                self._squelch = data[1]
+                self.squelch_open.emit(data[1] == 0x01)
         elif cmd == 0x27 and len(data) == 3 and data[0] == 0x14:
             if self._scope_mode is None:
                 self._scope_mode = data[2]
@@ -1146,6 +1204,12 @@ class MainWindow(QtWidgets.QMainWindow):
         vfo.addWidget(self.tune_button, 4, 0, 1, 2)
         vfo.addWidget(self.atu_button, 4, 2)
         vfo.addWidget(self.monitor_button, 4, 3)
+        self.power_button = QtWidgets.QPushButton("⏻ OFF")
+        self.power_button.setCheckable(True)
+        self.power_button.setToolTip("Met la radio en marche ou l'arrête")
+        self.power_button.clicked.connect(self.on_power_button)
+        self.radio_on = False
+        vfo.addWidget(self.power_button, 5, 0, 1, 4)
 
         # Bandes : la radio retrouve la dernière fréquence utilisée sur la bande
         try:
@@ -1488,6 +1552,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_limit = TX_TIMEOUT          # s ; plus pour un fichier plus long
         self.tx_loopback = None             # module PipeWire micro → radio
         self.tx_muted_listen = False        # écoute coupée le temps d'une émission
+        self.sql_closed = False             # écoute coupée, squelch de la radio fermé
         self.radio_tx = False               # la radio émet (lu en CI-V)
         self.tx_player = None               # paplay du fichier
         self.tx_timer = QtCore.QTimer(self)
@@ -1536,6 +1601,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.drain.connect(self.on_drain)
             self.civ.scope.connect(self.on_scope)
             self.civ.span.connect(self.on_span)
+            self.civ.powered.connect(self.on_powered)
+            self.civ.squelch_open.connect(self.on_squelch)
             self.civ.status.connect(self.statusBar().showMessage)
             self.civ.start()
 
@@ -1989,7 +2056,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if tx == self.tx_muted_listen:
             return
         self.tx_muted_listen = tx
-        self.on_mute(True if tx else self.mute_check.isChecked())
+        self.on_mute()
 
     def on_tx_meters(self, po, swr, alc):
         self.swr_meter.setValue(swr)
@@ -2022,6 +2089,28 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.civ:
             self.civ.set_monitor(on)
 
+    def on_power_button(self):
+        on = not self.radio_on      # l'état lu sur la radio, pas celui du bouton
+        self.on_powered(self.radio_on)
+        if not self.civ:
+            return
+        if not on:
+            answer = QtWidgets.QMessageBox.question(
+                self, "Arrêt", "Arrêter la radio ?")
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+            if self.ptt_button.isChecked():
+                self.stop_tx("Émission coupée : arrêt de la radio")
+        self.power_button.setText("⏻ …")
+        self.civ.set_onoff(on)
+
+    def on_powered(self, on):
+        self.radio_on = on
+        self.power_button.setChecked(on)
+        self.power_button.setText("⏻ ON" if on else "⏻ OFF")
+        self.power_button.setStyleSheet(
+            "background: #2e7d32; color: white; font-weight: bold;" if on else "")
+
     def on_tuner(self, state):
         self.atu_button.setChecked(state in (0x01, 0x02))
         tuning = state == 0x02
@@ -2045,8 +2134,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pc_volume_label.setText(f"{value} %")
         self._pactl_stream("set-sink-input-volume", f"{value}%")
 
-    def on_mute(self, muted):
+    def on_mute(self, *_):
+        muted = self.mute_check.isChecked() or self.tx_muted_listen or self.sql_closed
         self._pactl_stream("set-sink-input-mute", "1" if muted else "0")
+
+    def on_squelch(self, open_):
+        """La sortie USB de la radio ignore le squelch : l'appli coupe
+        l'écoute PC elle-même (les décodeurs reçoivent toujours le son)."""
+        self.sql_closed = not open_
+        self.on_mute()
 
     def on_af_gain(self, level):
         self.af_slider.setEnabled(True)
