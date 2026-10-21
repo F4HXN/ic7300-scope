@@ -406,6 +406,7 @@ class CivReader(QtCore.QThread):
     other_frequency = QtCore.pyqtSignal(int)     # VFO non sélectionné
     other_mode = QtCore.pyqtSignal(str)
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
+    level = QtCore.pyqtSignal(int, int)         # réglage 0x14 (RF 0x02, SQL 0x03), 0 à 255
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
     monitor = QtCore.pyqtSignal(bool)           # MONI : écoute de sa propre émission
     filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
@@ -428,6 +429,7 @@ class CivReader(QtCore.QThread):
         self._pending_freq = None
         self._pending_mode = None
         self._pending_af = None
+        self._pending_levels = {}       # réglages 0x14 : sous-commande → valeur
         self._commands = queue.Queue()
         self._tuner = None
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
@@ -482,6 +484,10 @@ class CivReader(QtCore.QThread):
 
     def set_af_gain(self, level):
         self._pending_af = level
+
+    def set_level(self, sub, level):
+        """Réglage 0x14 de la radio : 0x02 gain RF, 0x03 squelch."""
+        self._pending_levels[sub] = level
 
     def set_span(self, hz):
         self._pending_span = hz
@@ -628,6 +634,10 @@ class CivReader(QtCore.QThread):
             if level is not None:
                 self._command(ser, 0x14, 0x01, level // 100,
                               (level // 10 % 10) << 4 | level % 10)
+            for sub in list(self._pending_levels):
+                level = self._pending_levels.pop(sub)
+                self._command(ser, 0x14, sub, level // 100,
+                              (level // 10 % 10) << 4 | level % 10)
             power, self._pending_power = self._pending_power, None
             if power is not None:
                 self._command(ser, 0x14, 0x0A, power // 100,
@@ -653,7 +663,7 @@ class CivReader(QtCore.QThread):
                     queries += [(0x03,), (0x04,), (0x1A, 0x06)]
             elif n % 10 == 0:
                 queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
-                           (0x14, 0x01), (0x14, 0x0A), (0x1C, 0x00),
+                           (0x14, 0x01), (0x14, 0x02), (0x14, 0x03), (0x14, 0x0A), (0x1C, 0x00),
                            (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x16, 0x45),
                            (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
@@ -772,6 +782,8 @@ class CivReader(QtCore.QThread):
             self.drain.emit(bcd_be(data[1:]))
         elif cmd == 0x14 and len(data) == 3 and data[0] == 0x01:
             self.af_gain.emit(bcd_be(data[1:]))
+        elif cmd == 0x14 and len(data) == 3 and data[0] in (0x02, 0x03):
+            self.level.emit(data[0], bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x02:
             self.meter.emit(bcd_be(data[1:]))
         elif cmd == 0x27 and len(data) == 3 and data[0] == 0x14:
@@ -1279,6 +1291,26 @@ class MainWindow(QtWidgets.QMainWindow):
         controls.addWidget(QtWidgets.QLabel("AF radio"))
         controls.addWidget(self.af_slider)
         controls.addWidget(self.af_label)
+        # gain RF et squelch de la radio
+        self.level_sliders = {}
+        for sub, name, tip in ((0x02, "RF", "Gain HF de la radio (RF GAIN). Le baisser "
+                                "sur une bande bruyante ou un signal très fort."),
+                               (0x03, "SQL", "Squelch de la radio : coupe le son sous "
+                                "ce niveau. À zéro, toujours ouvert.")):
+            slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            slider.setRange(0, 255)
+            slider.setFixedWidth(100)
+            slider.setToolTip(tip)
+            slider.setEnabled(False)        # activé quand la radio répond
+            label = QtWidgets.QLabel()
+            label.setMinimumWidth(45)
+            slider.valueChanged.connect(
+                lambda value, sub=sub: self.on_level_slider(sub, value))
+            controls.addSpacing(10)
+            controls.addWidget(QtWidgets.QLabel(name))
+            controls.addWidget(slider)
+            controls.addWidget(label)
+            self.level_sliders[sub] = (slider, label)
 
         self.loopback = find_loopback_stream()
         if self.loopback:
@@ -1492,6 +1524,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.other_frequency.connect(self.on_other_frequency)
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
+            self.civ.level.connect(self.on_level)
             self.civ.tuner.connect(self.on_tuner)
             self.civ.monitor.connect(self.monitor_button.setChecked)
             self.civ.power.connect(self.on_power)
@@ -2027,6 +2060,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.af_label.setText(f"{round(level * 100 / 255)} %")
         if self.civ:
             self.civ.set_af_gain(level)
+
+    def on_level(self, sub, level):
+        slider, label = self.level_sliders[sub]
+        slider.setEnabled(True)
+        if not slider.isSliderDown():
+            slider.blockSignals(True)
+            slider.setValue(level)
+            slider.blockSignals(False)
+        label.setText(f"{round(slider.value() * 100 / 255)} %")
+
+    def on_level_slider(self, sub, level):
+        self.level_sliders[sub][1].setText(f"{round(level * 100 / 255)} %")
+        if self.civ:
+            self.civ.set_level(sub, level)
 
     def on_meter(self, raw):
         self.s_meter.setValue(raw)
