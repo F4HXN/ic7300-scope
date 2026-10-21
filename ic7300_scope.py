@@ -410,6 +410,7 @@ class CivReader(QtCore.QThread):
     monitor = QtCore.pyqtSignal(bool)           # MONI : écoute de sa propre émission
     filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
     power = QtCore.pyqtSignal(int)              # puissance réglée, 0 à 255
+    key_speed = QtCore.pyqtSignal(int)          # vitesse du manipulateur, 0 à 255
     transmitting = QtCore.pyqtSignal(bool)      # la radio émet
     tx_meters = QtCore.pyqtSignal(int, int, int)  # puissance, ROS, ALC (0 à 255)
     usb_mod = QtCore.pyqtSignal(int)            # menu USB MOD Level, 0 à 255
@@ -432,6 +433,8 @@ class CivReader(QtCore.QThread):
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
         self._pending_span = None
         self._pending_power = None
+        self._pending_key_speed = None
+        self._break_in = None           # BK-IN : 0 arrêt, 1 semi, 2 full
         self._pending_usb_mod = None
         self._pending_ptt = None
         self._ptt = False               # émission demandée par l'appli
@@ -507,6 +510,23 @@ class CivReader(QtCore.QThread):
 
     def set_power(self, level):
         self._pending_power = level
+
+    def set_key_speed(self, level):
+        self._pending_key_speed = level
+
+    def send_cw(self, text):
+        """Texte émis en CW par le manipulateur de la radio (mode CW).
+
+        Sans BK-IN la radio ne passe pas en émission : on met le semi BK-IN."""
+        if self._break_in == 0x00:
+            self._commands.put((0x16, 0x47, 0x01))
+            self._break_in = 0x01
+            self.status.emit("BK-IN mis en semi pour émettre la CW")
+        for i in range(0, len(text), 30):       # 30 caractères par trame
+            self._commands.put((0x17, *text[i:i + 30].encode("ascii")))
+
+    def stop_cw(self):
+        self._commands.put((0x17, 0xFF))
 
     def set_usb_mod(self, level):
         """Gain de l'entrée USB à l'émission (menu USB MOD Level), 0 à 255."""
@@ -612,6 +632,10 @@ class CivReader(QtCore.QThread):
             if power is not None:
                 self._command(ser, 0x14, 0x0A, power // 100,
                               (power // 10 % 10) << 4 | power % 10)
+            speed, self._pending_key_speed = self._pending_key_speed, None
+            if speed is not None:
+                self._command(ser, 0x14, 0x0C, speed // 100,
+                              (speed // 10 % 10) << 4 | speed % 10)
             level, self._pending_usb_mod = self._pending_usb_mod, None
             if level is not None:
                 self._command(ser, 0x1A, 0x05, 0x00, 0x65, level // 100,
@@ -631,7 +655,7 @@ class CivReader(QtCore.QThread):
                 queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
                            (0x14, 0x01), (0x14, 0x0A), (0x1C, 0x00),
                            (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x16, 0x45),
-                           (0x15, 0x02)]
+                           (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
@@ -720,6 +744,10 @@ class CivReader(QtCore.QThread):
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x01:
             self._tuner = data[1]
             self.tuner.emit(data[1])
+        elif cmd == 0x16 and len(data) == 2 and data[0] == 0x47:
+            self._break_in = data[1]
+        elif cmd == 0x14 and len(data) == 3 and data[0] == 0x0C:
+            self.key_speed.emit(bcd_be(data[1:]))
         elif cmd == 0x16 and len(data) == 2 and data[0] == 0x45:
             self.monitor.emit(data[1] == 0x01)
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x00:
@@ -1392,6 +1420,32 @@ class MainWindow(QtWidgets.QMainWindow):
         tx_row.addStretch()
         tx_row.addWidget(self.ptt_button)
         layout.addLayout(tx_row)
+
+        # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
+        cw_row = QtWidgets.QHBoxLayout()
+        self.cw_text = QtWidgets.QLineEdit()
+        self.cw_text.setPlaceholderText("Texte à émettre en CW, Entrée pour envoyer "
+                                        "(^AR, ^SK… pour les signes liés)")
+        self.cw_text.setStyleSheet("font: 12pt monospace;")
+        self.cw_text.returnPressed.connect(self.on_cw_send)
+        self.cw_speed = QtWidgets.QSpinBox()
+        self.cw_speed.setRange(6, 48)
+        self.cw_speed.setSuffix(" wpm")
+        self.cw_speed.setToolTip("Vitesse du manipulateur de la radio")
+        self.cw_speed.setEnabled(False)         # activé quand la radio répond
+        self.cw_speed.valueChanged.connect(self.on_cw_speed)
+        self.cw_send_button = QtWidgets.QPushButton("Envoyer")
+        self.cw_send_button.clicked.connect(self.on_cw_send)
+        self.cw_stop_button = QtWidgets.QPushButton("Stop")
+        self.cw_stop_button.setToolTip("Arrête le message en cours")
+        self.cw_stop_button.clicked.connect(self.on_cw_stop)
+        cw_row.addWidget(QtWidgets.QLabel("CW"))
+        cw_row.addWidget(self.cw_text, stretch=1)
+        cw_row.addWidget(self.cw_speed)
+        cw_row.addWidget(self.cw_send_button)
+        cw_row.addWidget(self.cw_stop_button)
+        layout.addLayout(cw_row)
+        self._cw_enable(False)
         self.tx_source.currentIndexChanged.connect(self.on_tx_source)
         self.on_tx_source()
         self.power_slider.valueChanged.connect(self.on_power_slider)
@@ -1439,6 +1493,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.tuner.connect(self.on_tuner)
             self.civ.monitor.connect(self.monitor_button.setChecked)
             self.civ.power.connect(self.on_power)
+            self.civ.key_speed.connect(self.on_key_speed)
             self.civ.transmitting.connect(self.on_transmitting)
             self.civ.tx_meters.connect(self.on_tx_meters)
             self.civ.usb_mod.connect(self.on_usb_mod)
@@ -1609,6 +1664,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_mode(self, name):
         self.mode_combo.setCurrentText(name)
+        self._cw_enable(self.civ is not None and name in ("CW", "CW-R"))
         self._filter_tooltips()
         self._update_markers()
 
@@ -1710,6 +1766,37 @@ class MainWindow(QtWidgets.QMainWindow):
         self.power_label.setText(f"≈ {percent} W")
         if self.civ:
             self.civ.set_power(round(percent * 255 / 100))
+
+    def _cw_enable(self, on):
+        for widget in (self.cw_text, self.cw_send_button, self.cw_stop_button):
+            widget.setEnabled(on)
+        self.cw_text.setToolTip("" if on else "Passer la radio en CW pour émettre")
+
+    def on_key_speed(self, raw):
+        self.cw_speed.setEnabled(True)
+        if not self.cw_speed.hasFocus():
+            self.cw_speed.blockSignals(True)
+            self.cw_speed.setValue(round(6 + raw * 42 / 255))
+            self.cw_speed.blockSignals(False)
+
+    def on_cw_speed(self, wpm):
+        if self.civ:
+            self.civ.set_key_speed(round((wpm - 6) * 255 / 42))
+
+    def on_cw_send(self):
+        # caractères que la radio sait émettre ; ^ lie deux lettres (^AR)
+        text = "".join(c for c in self.cw_text.text().upper()
+                       if c.isascii() and (c.isalnum() or c in " /?.-,:'()=+\"@^"))
+        text = " ".join(text.split())
+        if not text or not self.civ:
+            return
+        self.civ.send_cw(text)
+        self.cw_text.clear()
+        self.statusBar().showMessage(f"CW : {text}")
+
+    def on_cw_stop(self):
+        if self.civ:
+            self.civ.stop_cw()
 
     def on_usb_mod(self, raw):
         self.alc_slider.setEnabled(True)
