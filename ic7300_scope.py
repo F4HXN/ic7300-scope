@@ -24,8 +24,6 @@ import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
 from cw_pioche import hand_timing
-from psk31_decoder import Psk31Decoder
-from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
 from sstv_window import SstvWindow
 
@@ -343,8 +341,7 @@ class AudioReader(QtCore.QThread):
         self.source = source
         self.proc = None
         self._running = True
-        self.decoders = {"cw": CwDecoder(RATE), "psk31": Psk31Decoder(RATE),
-                         "rtty": RttyDecoder(RATE), "ft8": Ft8Decoder(RATE),
+        self.decoders = {"cw": CwDecoder(RATE), "ft8": Ft8Decoder(RATE),
                          "ft4": Ft4Decoder(RATE)}
         self.decoder = None             # décodeur choisi, ou None
         self.sstv = None                # décodeur SSTV quand sa fenêtre est ouverte
@@ -1613,21 +1610,15 @@ class MainWindow(QtWidgets.QMainWindow):
         enlarge_slider_labels(volumes)
         layout.addLayout(volumes)
 
-        # Décodeurs CW et PSK31
+        # Décodeurs CW, FT8 et FT4
         decoder_row = QtWidgets.QHBoxLayout()
         self.decoder_combo = QtWidgets.QComboBox()
         self.decoder_combo.addItem("Aucun", None)
         self.decoder_combo.addItem("CW", "cw")
-        self.decoder_combo.addItem("PSK31", "psk31")
-        self.decoder_combo.addItem("RTTY 45", "rtty")
         self.decoder_combo.addItem("FT8", "ft8")
         self.decoder_combo.addItem("FT4", "ft4")
         self.decoder_auto = QtWidgets.QCheckBox("Calage auto")
         self.decoder_auto.setChecked(True)
-        self.rtty_invert = QtWidgets.QCheckBox("Inverser")
-        self.rtty_invert.setToolTip("Mark sur la tonalité haute. À essayer si "
-                                    "le texte reste incohérent.")
-        self.rtty_invert.toggled.connect(self.on_rtty_invert)
         self.decoder_led = QtWidgets.QLabel("●")
         self.decoder_info = QtWidgets.QLabel("")
         self.decoder_info.setStyleSheet("font: 11pt monospace;")
@@ -1635,7 +1626,6 @@ class MainWindow(QtWidgets.QMainWindow):
         decoder_row.addWidget(QtWidgets.QLabel("Décodeur"))
         decoder_row.addWidget(self.decoder_combo)
         decoder_row.addWidget(self.decoder_auto)
-        decoder_row.addWidget(self.rtty_invert)
         decoder_row.addWidget(self.decoder_led)
         decoder_row.addWidget(self.decoder_info)
         self.decoder_led.setMinimumWidth(16)
@@ -2648,48 +2638,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if decoder:
                 self._set_decoder_pitch(x)
             return
-        # vue RF : en PSK31, un clic dans la bande écoutée choisit le signal
-        audio = self._audio_offset(x * 1000)
-        if decoder in ("psk31", "rtty") and audio is not None:
-            if decoder == "psk31" and self.scope_points:
-                # un point du scope fait jusqu'à 100 Hz (±25 kHz) : on cherche
-                # le signal le plus fort autour du clic dans le spectre audio
-                point = (self.scope_edges[1] - self.scope_edges[0]) / self.scope_points
-                audio = self._strongest_near(audio, max(25, 1.5 * point))
-            self._set_decoder_pitch(audio)
-            return
         step = self.step_combo.currentData()
         self.tune_to(round(x * 1000 / step) * step)
-
-    def _audio_offset(self, rf_hz):
-        """Fréquence audio d'un signal RF, s'il tombe dans la bande en BLU."""
-        if self.freq_hz is None:
-            return None
-        mode = base_mode(self.mode_combo.currentText())
-        audio = {"USB": rf_hz - self.freq_hz, "LSB": self.freq_hz - rf_hz}.get(mode)
-        if audio is not None and 100 <= audio <= 3000:
-            return audio
-        return None
-
-    def _strongest_near(self, hz, tolerance):
-        """Centre du signal le plus fort à ± tolerance de hz (spectre audio).
-
-        La puissance est lissée sur ± 20 Hz : les deux raies d'un signal
-        PSK31 au repos ne font qu'un pic, centré sur sa fréquence."""
-        if self.audio_db is None:
-            return hz
-        power = 10 ** (self.audio_db / 10)
-        half = max(int(20 / BIN_HZ), 1)
-        smooth = np.convolve(power, np.ones(2 * half + 1), mode="same")
-        lo = max(int((hz - tolerance) / BIN_HZ), 1)
-        hi = min(int((hz + tolerance) / BIN_HZ) + 2, len(smooth))
-        if hi <= lo:
-            return hz
-        best = lo + int(np.argmax(smooth[lo:hi]))
-        floor = np.median(smooth[int(200 / BIN_HZ):int(3000 / BIN_HZ)])
-        if smooth[best] < 4 * floor:        # rien qui dépasse le bruit
-            return hz
-        return best * BIN_HZ
 
     def _set_decoder_pitch(self, hz):
         decoder = self.audio.decoder
@@ -2710,13 +2660,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_auto.setToolTip({
             "cw": "Cherche la note CW la plus forte entre 300 et 1200 Hz. "
                   "Clic sur le spectre audio pour la choisir.",
-            "psk31": "Se recale sur le signal à ± 25 Hz du clic, puis le suit. "
-                     "Clic sur le spectre audio, ou en RF dans la bande écoutée.",
-            "rtty": "Se recale sur la paire de tonalités à ± 60 Hz du clic. "
-                    "Cliquer entre les deux traces.",
         }.get(name, ""))
-        self.rtty_invert.setVisible(name == "rtty")
-        self.decoder_auto.setVisible(name in ("cw", "psk31", "rtty"))
+        self.decoder_auto.setVisible(name == "cw")
         # FT8/FT4 : plusieurs lignes par créneau, il faut de la place
         self.decoder_text.setFixedHeight(150 if name in ("ft8", "ft4") else 70)
         if name == "ft4" and self.decoder_text.document().isEmpty():
@@ -2736,9 +2681,6 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._move_pitch_lines(decoder.pitch)
         self._show_pitch_lines()
-
-    def on_rtty_invert(self, inverted):
-        self.audio.decoders["rtty"].inverted = inverted
 
     def on_decoder_auto(self, auto):
         if self.audio.decoder:

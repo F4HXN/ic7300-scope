@@ -69,8 +69,6 @@ ni interface externe ni logiciel de pilotage à installer.
 | Mode | Principe |
 |---|---|
 | **CW** | Démodulation à la note, seuil adaptatif, vitesse suivie automatiquement |
-| **PSK31** | BPSK 31,25 bauds, Varicode, AFC qui suit la dérive |
-| **RTTY 45** | 45,45 bauds, écart 170 Hz, Baudot ITA2 |
 | **FT8 / FT4** | Créneaux calés sur l'heure UTC, décodage par `jt9` (moteur de WSJT-X) |
 | **SSTV** | Réception et émission : Martin, Scottie, Robot, PD |
 
@@ -225,8 +223,6 @@ python3 scanner_vhf_uhf.py
 |---|---|
 | `ic7300_scope.py` | Fenêtre principale, CI-V, son, spectre, waterfall, émission |
 | `cw_decoder.py` | Décodeur CW |
-| `psk31_decoder.py` | Décodeur PSK31 |
-| `rtty_decoder.py` | Décodeur RTTY |
 | `ft8_decoder.py` | FT8 / FT4 via `jt9` |
 | `sstv.py` · `sstv_window.py` | SSTV : codage, décodage et fenêtre |
 | `cat_server.py` | Serveur CI-V réseau pour `--remote` |

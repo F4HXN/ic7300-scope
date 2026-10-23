@@ -13,12 +13,18 @@ import threading
 
 import numpy as np
 
-from psk31_decoder import lowpass
 
 SYNC_HZ, BLACK_HZ, WHITE_HZ, LEADER_HZ = 1200.0, 1500.0, 2300.0, 1900.0
 CENTER_HZ = 1700.0              # milieu de la bande utile (1100 à 2300 Hz)
 WORK_RATE = 12000               # fréquence de travail du décodeur (Hz)
 MS = WORK_RATE // 1000          # échantillons par milliseconde
+
+
+def lowpass(cutoff, rate, taps):
+    """Filtre passe-bas RIF (sinus cardinal fenêtré), gain 1."""
+    n = np.arange(taps) - (taps - 1) / 2
+    h = np.sinc(2 * cutoff / rate * n) * np.hamming(taps)
+    return h / h.sum()
 
 
 class Mode:
