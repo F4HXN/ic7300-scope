@@ -62,6 +62,30 @@ STATE_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
                           "ic7300-scope", "etat-origine.json")
 # dernière fréquence et dernier mode utilisés sur chaque bande
 BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
+# indicatif et station de l'opérateur, pour les messages CW tout faits
+CALLSIGN_FILE = os.path.join(os.path.dirname(STATE_FILE), "indicatif.json")
+# champs de « Ma station… » : clé, libellé, valeur de départ
+STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
+                  ("qth", "QTH", "PUGET-THENIERS"),
+                  ("loc", "Locator", "JN33KW"),
+                  ("rig", "Transceiver", "IC7300"),
+                  ("pwr", "Puissance (W)", ""),
+                  ("ant", "Antenne", "")]
+# messages CW d'un QSO classique, dans l'ordre : {call} mon indicatif, {dest}
+# et {dname} indicatif et prénom du correspondant, {gm} GM/GA/GE selon l'heure,
+# les autres viennent de « Ma station… » ; ^SK est le signe SK lié
+CW_MACROS = [
+    ("CQ", "Appel général", "CQ CQ CQ DE {call} {call} {call} PSE K"),
+    ("Répondre", "Répondre à un CQ", "{dest} {dest} DE {call} {call} K"),
+    ("Rapport", "Premier passage : RST, prénom, QTH, locator",
+     "{dest} DE {call} {gm} DR OM TNX FER CALL UR RST 599 599 "
+     "NAME {name} {name} QTH {qth} {qth} LOC {loc} {loc} HW? {dest} DE {call} K"),
+    ("Station 73", "Matériel, remerciements et fin du QSO",
+     "{dest} DE {call} FB {dname} RIG HERE {rig} PWR {pwr} W ANT {ant} "
+     "TNX FB QSO QSL VIA BUREAU OR EQSL 73 ES GD DX {dest} DE {call} ^SK"),
+    ("Fin", "Réponse à la fin du correspondant",
+     "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} ^SK"),
+]
 # bandes émission de l'IC-7300 : nom, limites (Hz), fréquence et mode de départ
 BANDS = [("160m", 1_810_000, 2_000_000, 1_850_000, "LSB"),
          ("80m", 3_500_000, 3_800_000, 3_700_000, "LSB"),
@@ -1262,7 +1286,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pg.colormap.get("inferno").getLookupTable(nPts=256))
         self.wf_plot.addItem(self.wf_image)
         graphics.ci.layout.setRowStretchFactor(0, 1)
-        graphics.ci.layout.setRowStretchFactor(1, 2)
+        graphics.ci.layout.setRowStretchFactor(1, 1)
         self.cursor_lines = []
         self.tuned_lines = []
         self.passbands = []
@@ -1290,8 +1314,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # molette : change la fréquence ; glisser en vue RF : déplace la bande
         self.drag = None                # (x de départ, kHz par pixel, fréquence)
         self.dragged = False
+        # tirer la limite entre spectre et waterfall : change leur hauteur
+        self.split_drag = False
+        self.graphics = graphics
         graphics.viewport().installEventFilter(self)
-        layout.addWidget(graphics, stretch=1)
+        layout.addWidget(graphics, stretch=2)
 
         # Réglages
         controls = QtWidgets.QHBoxLayout()
@@ -1333,28 +1360,30 @@ class MainWindow(QtWidgets.QMainWindow):
         controls.addStretch()
 
         # Volumes : le son de la radio sur le PC, et le volume de la radio
+        # (ligne à part : avec les réglages d'affichage, trop large pour l'écran)
+        volumes = QtWidgets.QHBoxLayout()
         self.pc_volume = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.pc_volume.setRange(0, 150)
-        self.pc_volume.setFixedWidth(130)
+        self.pc_volume.setFixedWidth(180)
         self.pc_volume.setToolTip("Volume du son de la radio sur le PC")
         self.pc_volume_label = QtWidgets.QLabel()
         self.pc_volume_label.setMinimumWidth(50)
         self.mute_check = QtWidgets.QCheckBox("Muet")
         self.af_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.af_slider.setRange(0, 255)
-        self.af_slider.setFixedWidth(130)
+        self.af_slider.setFixedWidth(180)
         self.af_slider.setToolTip("Volume du haut-parleur de la radio (AF). "
                                   "Ne change pas le son envoyé au PC.")
         self.af_label = QtWidgets.QLabel()
         self.af_label.setMinimumWidth(50)
-        controls.addWidget(QtWidgets.QLabel("Volume PC"))
-        controls.addWidget(self.pc_volume)
-        controls.addWidget(self.pc_volume_label)
-        controls.addWidget(self.mute_check)
-        controls.addSpacing(20)
-        controls.addWidget(QtWidgets.QLabel("AF radio"))
-        controls.addWidget(self.af_slider)
-        controls.addWidget(self.af_label)
+        volumes.addWidget(QtWidgets.QLabel("Volume PC"))
+        volumes.addWidget(self.pc_volume)
+        volumes.addWidget(self.pc_volume_label)
+        volumes.addWidget(self.mute_check)
+        volumes.addSpacing(20)
+        volumes.addWidget(QtWidgets.QLabel("AF radio"))
+        volumes.addWidget(self.af_slider)
+        volumes.addWidget(self.af_label)
         # gain RF et squelch de la radio
         self.level_sliders = {}
         for sub, name, tip in ((0x02, "RF", "Gain HF de la radio (RF GAIN). Le baisser "
@@ -1363,17 +1392,17 @@ class MainWindow(QtWidgets.QMainWindow):
                                 "ce niveau. À zéro, toujours ouvert.")):
             slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             slider.setRange(0, 255)
-            slider.setFixedWidth(100)
+            slider.setFixedWidth(140)
             slider.setToolTip(tip)
             slider.setEnabled(False)        # activé quand la radio répond
             label = QtWidgets.QLabel()
             label.setMinimumWidth(45)
             slider.valueChanged.connect(
                 lambda value, sub=sub: self.on_level_slider(sub, value))
-            controls.addSpacing(10)
-            controls.addWidget(QtWidgets.QLabel(name))
-            controls.addWidget(slider)
-            controls.addWidget(label)
+            volumes.addSpacing(10)
+            volumes.addWidget(QtWidgets.QLabel(name))
+            volumes.addWidget(slider)
+            volumes.addWidget(label)
             self.level_sliders[sub] = (slider, label)
 
         self.loopback = find_loopback_stream()
@@ -1391,6 +1420,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.af_slider.setEnabled(False)    # activé quand la radio répond
         self.af_slider.valueChanged.connect(self.on_af_slider)
         layout.addLayout(controls)
+        volumes.addStretch()
+        enlarge_slider_labels(volumes)
+        layout.addLayout(volumes)
 
         # Décodeurs CW et PSK31
         decoder_row = QtWidgets.QHBoxLayout()
@@ -1445,18 +1477,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_text = QtWidgets.QPlainTextEdit()
         self.decoder_text.setReadOnly(True)
         self.decoder_text.setMaximumBlockCount(500)
-        self.decoder_text.setFixedHeight(70)
+        self.decoder_text.setMinimumHeight(70)
         self.decoder_text.setStyleSheet("font: bold 14pt monospace; color: #3ddc84;")
         self.decoder_text.setVisible(False)
         layout.addLayout(decoder_row)
-        layout.addWidget(self.decoder_text)
+        layout.addWidget(self.decoder_text, stretch=1)
 
         # Émission : micro du PC ou fichier, envoyés à la radio par l'USB
         self.radio_sink = args.sink
         tx_row = QtWidgets.QHBoxLayout()
         self.power_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.power_slider.setRange(0, 100)
-        self.power_slider.setFixedWidth(120)
+        self.power_slider.setFixedWidth(170)
         self.power_slider.setToolTip("Puissance d'émission de la radio")
         self.power_slider.setEnabled(False)     # activé quand la radio répond
         self.power_label = QtWidgets.QLabel("")
@@ -1466,12 +1498,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tx_source.addItem(f"Micro : {description}", name)
         self.tx_source.addItem("Fichier audio", "file")
         self.tx_source.setToolTip("Ce qui part à l'émission")
+        # les noms des micros peuvent être très longs : la liste déroulée les
+        # montre en entier, la case reste raisonnable
+        self.tx_source.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.tx_source.setMinimumContentsLength(28)
         self.tx_file = None
         self.tx_file_button = QtWidgets.QPushButton("Choisir…")
         self.tx_file_button.clicked.connect(self.choose_tx_file)
         self.tx_level = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.tx_level.setRange(0, 100)
-        self.tx_level.setFixedWidth(100)
+        self.tx_level.setFixedWidth(140)
         self.tx_level.setToolTip("Niveau du son envoyé à la radio. Le régler "
                                  "pour que l'ALC bouge sans dépasser.")
         volume = sink_volume(self.radio_sink)
@@ -1482,7 +1519,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # gain USB de la radio : c'est lui qui fait monter l'ALC
         self.alc_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.alc_slider.setRange(0, 100)
-        self.alc_slider.setFixedWidth(100)
+        self.alc_slider.setFixedWidth(140)
         self.alc_slider.setToolTip("Gain de l'entrée USB de la radio (menu USB MOD "
                                    "Level). En émission, le monter jusqu'à ce que "
                                    "l'ALC bouge, sans rester au maximum.")
@@ -1515,6 +1552,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tx_row.addWidget(self.tx_meter_label)
         tx_row.addStretch()
         tx_row.addWidget(self.ptt_button)
+        enlarge_slider_labels(tx_row)
         layout.addLayout(tx_row)
 
         # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
@@ -1540,7 +1578,56 @@ class MainWindow(QtWidgets.QMainWindow):
         cw_row.addWidget(self.cw_speed)
         cw_row.addWidget(self.cw_send_button)
         cw_row.addWidget(self.cw_stop_button)
-        layout.addLayout(cw_row)
+        # indicatif et messages tout faits
+        macro_row = QtWidgets.QHBoxLayout()
+        self.callsign = QtWidgets.QLineEdit()
+        self.callsign.setPlaceholderText("Indicatif")
+        self.callsign.setMaximumWidth(120)
+        self.callsign.setStyleSheet("font: 12pt monospace;")
+        self.station = {key: value for key, _, value in STATION_FIELDS}
+        try:
+            with open(CALLSIGN_FILE) as f:
+                self.station.update(json.load(f))
+        except (OSError, ValueError):
+            pass
+        self.callsign.setText(self.station.get("callsign", ""))
+        station_button = QtWidgets.QPushButton("Ma station…")
+        station_button.setToolTip("Prénom, QTH, locator et matériel des messages")
+        station_button.clicked.connect(self.on_station)
+        self.callsign.textEdited.connect(
+            lambda text: self._upper(self.callsign, text))
+        self.callsign.editingFinished.connect(self.on_callsign)
+        # correspondant : change à chaque QSO, pas enregistré
+        self.dest_call = QtWidgets.QLineEdit()
+        self.dest_call.setPlaceholderText("Correspondant")
+        self.dest_call.setMaximumWidth(120)
+        self.dest_name = QtWidgets.QLineEdit()
+        self.dest_name.setPlaceholderText("Son prénom")
+        self.dest_name.setMaximumWidth(120)
+        for field in (self.dest_call, self.dest_name):
+            field.setStyleSheet("font: 12pt monospace;")
+            field.textEdited.connect(
+                lambda text, field=field: self._upper(field, text))
+        macro_row.addWidget(QtWidgets.QLabel("Indicatif"))
+        macro_row.addWidget(self.callsign)
+        macro_row.addWidget(station_button)
+        macro_row.addSpacing(10)
+        macro_row.addWidget(QtWidgets.QLabel("Correspondant"))
+        macro_row.addWidget(self.dest_call)
+        macro_row.addWidget(self.dest_name)
+        macro_row.addSpacing(10)
+        self.cw_macro_buttons = []
+        for name, tip, text in CW_MACROS:
+            button = QtWidgets.QPushButton(name)
+            button.setToolTip(f"{tip} :\n{text}\nMis dans le champ CW, Entrée pour envoyer")
+            button.clicked.connect(lambda _, text=text: self.on_cw_macro(text))
+            macro_row.addWidget(button)
+            self.cw_macro_buttons.append(button)
+        macro_row.addStretch()
+        # juste sous le texte décodé : réception puis réponse
+        index = layout.indexOf(self.decoder_text) + 1
+        layout.insertLayout(index, cw_row)
+        layout.insertLayout(index + 1, macro_row)
         self._cw_enable(False)
         self.tx_source.currentIndexChanged.connect(self.on_tx_source)
         self.on_tx_source()
@@ -1873,7 +1960,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.set_power(round(percent * 255 / 100))
 
     def _cw_enable(self, on):
-        for widget in (self.cw_text, self.cw_send_button, self.cw_stop_button):
+        for widget in (self.cw_text, self.cw_send_button, self.cw_stop_button,
+                       *self.cw_macro_buttons):
             widget.setEnabled(on)
         self.cw_text.setToolTip("" if on else "Passer la radio en CW pour émettre")
 
@@ -1898,6 +1986,64 @@ class MainWindow(QtWidgets.QMainWindow):
         self.civ.send_cw(text)
         self.cw_text.clear()
         self.statusBar().showMessage(f"CW : {text}")
+
+    def _upper(self, field, text):
+        position = field.cursorPosition()
+        field.setText(text.upper())
+        field.setCursorPosition(position)
+
+    def on_callsign(self):
+        self.station["callsign"] = self.callsign.text().strip()
+        try:
+            os.makedirs(os.path.dirname(CALLSIGN_FILE), exist_ok=True)
+            with open(CALLSIGN_FILE, "w") as f:
+                json.dump(self.station, f)
+        except OSError:
+            pass
+
+    def on_station(self):
+        """Prénom, QTH, locator et matériel repris dans les messages CW."""
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Ma station")
+        form = QtWidgets.QFormLayout(dialog)
+        fields = {}
+        for key, label, _ in STATION_FIELDS:
+            field = QtWidgets.QLineEdit(self.station.get(key, ""))
+            field.textEdited.connect(lambda text, field=field: self._upper(field, text))
+            form.addRow(label, field)
+            fields[key] = field
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec_() == QtWidgets.QDialog.Accepted:
+            for key, field in fields.items():
+                self.station[key] = field.text().strip()
+            self.on_callsign()
+
+    def on_cw_macro(self, text):
+        hour = datetime.datetime.now().hour
+        values = {**self.station,
+                  "call": self.callsign.text().strip(),
+                  "dest": self.dest_call.text().strip(),
+                  "dname": self.dest_name.text().strip(),
+                  "gm": "GM" if hour < 12 else "GA" if hour < 18 else "GE"}
+        # le prénom du correspondant peut manquer, pas le reste
+        missing = {"call": ("ton indicatif", self.callsign),
+                   "dest": ("l'indicatif du correspondant", self.dest_call)}
+        for key, label, _ in STATION_FIELDS:
+            missing[key] = (f"le champ {label} de Ma station…", None)
+        for key, (label, field) in missing.items():
+            if "{" + key + "}" in text and not values[key]:
+                self.statusBar().showMessage(f"Indiquer d'abord {label}")
+                if field:
+                    field.setFocus()
+                else:
+                    self.on_station()
+                return
+        self.cw_text.setText(" ".join(text.format_map(values).split()))
+        self.cw_text.setFocus()
 
     def on_cw_stop(self):
         if self.civ:
@@ -2200,8 +2346,41 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self.cursor_label.setText(f"{x:6.0f} Hz")
 
+    def _on_split(self, pos):
+        """Vrai si la souris est sur la limite entre spectre et waterfall."""
+        spec = self.spec_plot.sceneBoundingRect()
+        wf = self.wf_plot.sceneBoundingRect()
+        return (spec.left() <= pos.x() <= spec.right()
+                and spec.bottom() - 4 <= pos.y() <= wf.top() + 4)
+
+    def _resize_split(self, pos):
+        spec = self.spec_plot.sceneBoundingRect()
+        wf = self.wf_plot.sceneBoundingRect()
+        height = min(max(pos.y() - spec.top(), 60), wf.bottom() - spec.top() - 60)
+        self.spec_plot.setMinimumHeight(height)
+        self.spec_plot.setMaximumHeight(height)
+
     def eventFilter(self, obj, event):
         kind = event.type()
+        if kind in (QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseMove,
+                    QtCore.QEvent.MouseButtonRelease):
+            pos = self.spec_plot.scene().views()[0].mapToScene(event.pos())
+            if (kind == QtCore.QEvent.MouseButtonPress
+                    and event.button() == QtCore.Qt.LeftButton
+                    and self._on_split(pos)):
+                self.split_drag = True
+                return True
+            if self.split_drag:
+                if kind == QtCore.QEvent.MouseMove:
+                    self._resize_split(pos)
+                else:
+                    self.split_drag = False
+                return True
+            if kind == QtCore.QEvent.MouseMove and not self.drag:
+                if self._on_split(pos):
+                    self.graphics.viewport().setCursor(QtCore.Qt.SizeVerCursor)
+                else:
+                    self.graphics.viewport().unsetCursor()
         if kind == QtCore.QEvent.Wheel:
             pos = self.spec_plot.scene().views()[0].mapToScene(event.pos())
             if self._x_at(pos) is not None and self.freq_hz is not None:
@@ -2431,6 +2610,19 @@ class MainWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
+def enlarge_slider_labels(row):
+    """Texte un peu plus gros de part et d'autre de chaque curseur de la ligne."""
+    widgets = [row.itemAt(i).widget() for i in range(row.count())]
+    for i, widget in enumerate(widgets):
+        if isinstance(widget, QtWidgets.QSlider):
+            for label in (widgets[i - 1] if i else None,
+                          widgets[i + 1] if i + 1 < len(widgets) else None):
+                if isinstance(label, QtWidgets.QLabel):
+                    font = label.font()
+                    font.setPointSizeF(font.pointSizeF() * 1.25)
+                    label.setFont(font)
+
+
 def dark_palette():
     palette = QtGui.QPalette()
     base, text = QtGui.QColor("#101418"), QtGui.QColor("#e0e0e0")
@@ -2478,6 +2670,18 @@ def main():
     app.setWindowIcon(QtGui.QIcon(ICON))
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
+    # curseurs plus gros : rainure épaisse et poignée large, faciles à attraper
+    app.setStyleSheet("""
+        QSlider:horizontal { min-height: 28px; }
+        QSlider::groove:horizontal { height: 8px; border-radius: 4px;
+                                     background: #37474f; }
+        QSlider::sub-page:horizontal { border-radius: 4px; background: #4fc3f7; }
+        QSlider::handle:horizontal { width: 22px; margin: -8px 0;
+                                     border-radius: 11px; background: #eceff1; }
+        QSlider::handle:horizontal:hover { background: #ffffff; }
+        QSlider::sub-page:horizontal:disabled { background: #546e7a; }
+        QSlider::handle:horizontal:disabled { background: #78909c; }
+    """)
     window = MainWindow(args)
     window.show()
     # kill, Ctrl+C ou fin de session : fermer la fenêtre pour remettre la
