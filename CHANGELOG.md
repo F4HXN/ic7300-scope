@@ -29,6 +29,7 @@
 | 25 | 23/10/2026 | `d200433` | Mémoires du PC et des 99 canaux de la radio (lecture, envoi, modification, effacement), 4 lignes de texte SSTV, écoute PC non muette au démarrage |
 | 26 | 23/10/2026 | `f8ab8c5` | Réglage de la fréquence à la souris (waterfall, scope) plus réactif |
 | 27 | 23/10/2026 | `9105c3e` | Vu-mètre retiré, bouton SSTV sous Mémoires |
+| 28 | 23/10/2026 | `bd58c2f` | Boutons Enreg., Dossier et ÉMETTRE (liseré rouge) sous SSTV, ligne Puissance sous Volume PC |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
