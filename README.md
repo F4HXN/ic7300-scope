@@ -63,6 +63,7 @@ ni interface externe ni logiciel de pilotage à installer.
 | | |
 |---|---|
 | **Bandes** | De 160 m à 4 m, fréquence et mode de départ pour chacune |
+| **Mémoires** | Celles du PC et les 99 canaux de la radio : lecture au démarrage, envoi, modification, effacement |
 | **Réglages** | Volume, AF, **RF GAIN**, **SQL**, puissance, niveau TX |
 | **Boutons** | `TUNE`, `ATU`, filtres `FIL1-3`, marche/arrêt `⏻` |
 | **Sécurité** | L'écoute sur le PC se coupe pendant toute émission (pas de larsen) |
@@ -75,7 +76,7 @@ ni interface externe ni logiciel de pilotage à installer.
 | **RTTY 45** | 45,45 bauds, écart 170 Hz, Baudot ITA2 |
 | **RTTY 50 météo** | 50 bauds, écart 450 Hz : bulletins de la météo allemande (DWD) |
 | **FT8 / FT4** | Créneaux calés sur l'heure UTC, décodage par `jt9` (moteur de WSJT-X) |
-| **SSTV** | Réception et émission : Martin, Scottie, Robot, PD |
+| **SSTV** | Réception et émission : Martin, Scottie, Robot, PD ; 4 lignes de texte en couleur sur l'image |
 | **Fax météo** | Cartes WEFAX 120 lignes/min, IOC 576 (DWD Pinneberg…), calage et pente automatiques |
 
 ### 📡 Émission
@@ -233,6 +234,7 @@ python3 scanner_vhf_uhf.py
 | `ft8_decoder.py` | FT8 / FT4 via `jt9` |
 | `sstv.py` · `sstv_window.py` | SSTV : codage, décodage et fenêtre |
 | `wefax.py` | Fax météo : réception des cartes |
+| `memory_window.py` | Fenêtre des mémoires (PC et radio) |
 | `cat_server.py` | Serveur CI-V réseau pour `--remote` |
 | `scanner_vhf_uhf.py` | Scanner VHF/UHF piloté par Gqrx |
 | `install.sh` · `install-serveur.sh` | Entrées du menu des applications |

@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import wave
 
 import numpy as np
@@ -26,6 +27,7 @@ from cw_decoder import CwDecoder
 from cw_pioche import hand_timing
 from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
+from memory_window import MemoryWindow
 from sstv_window import SstvWindow, bring_to_front
 
 DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
@@ -64,6 +66,7 @@ STATE_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
 BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
 # indicatif et station de l'opérateur, pour les messages CW tout faits
 CALLSIGN_FILE = os.path.join(os.path.dirname(STATE_FILE), "indicatif.json")
+MEMORY_DUMP_FILE = os.path.join(os.path.dirname(STATE_FILE), "memoires-radio-brut.txt")
 # champs de « Ma station… » : clé, libellé, valeur de départ
 STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
                   ("qth", "QTH", "PUGET-THENIERS"),
@@ -224,6 +227,48 @@ def bcd_le(data):
 def to_bcd_le(value, size=5):
     return bytes((value // 10 ** (2 * i + 1) % 10) << 4
                  | value // 10 ** (2 * i) % 10 for i in range(size))
+
+
+def to_bcd_be(value):
+    """Un octet BCD : 42 → 0x42."""
+    return (value // 10 % 10) << 4 | value % 10
+
+
+# canal mémoire (commande 1A 00), relevé sur l'IC-7300 : sélection, puis deux
+# fois fréquence (5), mode, filtre, data (quartet haut) et subton (quartet
+# bas), subton relais (3), subton TSQL (3) — VFO puis split — et le nom (10)
+MEMORY_DATA_SIZE = 1 + 2 * 14 + 10
+
+
+def memory_content(hz, mode, name, keep=None):
+    """Contenu d'un canal ; avec `keep` (canal existant), seuls fréquence,
+    mode et nom changent."""
+    base = base_mode(mode)
+    code = next(c for c, n in MODES.items() if n == base)
+    data = 0x10 if mode.endswith("-D") else 0x00
+    text = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
+    label = text[:10].ljust(10).encode("ascii")
+    if keep is not None:
+        content = bytearray(keep)
+        content[1:6] = to_bcd_le(hz)
+        content[6] = code
+        content[8] = data | (keep[8] & 0x0F)    # le subton est gardé
+        content[-10:] = label
+        return bytes(content)
+    tone = bytes((0x00, 0x08, 0x85))           # 88,5 Hz, non utilisé
+    vfo = to_bcd_le(hz) + bytes((code, 0x01, data)) + tone + tone
+    return bytes((0x00,)) + vfo + vfo + label
+
+
+def radio_memory(content):
+    """Contenu d'un canal → (nom, Hz, mode), None s'il est vide ou illisible."""
+    if not content or content == b"\xff" or len(content) != MEMORY_DATA_SIZE:
+        return None
+    code, data = content[6], content[8]
+    if code not in MODES:
+        return None
+    name = content[-10:].decode("ascii", "replace").strip()
+    return name, bcd_le(content[1:6]), mode_name(code, data >> 4 == 0x01)
 
 
 def bcd_be(data):
@@ -481,6 +526,8 @@ class CivReader(QtCore.QThread):
     span = QtCore.pyqtSignal(int)               # demi-largeur du scope (Hz)
     powered = QtCore.pyqtSignal(bool)           # la radio répond (en marche)
     squelch_open = QtCore.pyqtSignal(bool)      # squelch ouvert (signal présent)
+    memory_written = QtCore.pyqtSignal(bool, str)  # écriture d'un canal : réussite, message
+    memory_channel = QtCore.pyqtSignal(int, object)  # canal lu : numéro, contenu brut ou None
     status = QtCore.pyqtSignal(str)
 
     def __init__(self, port, baud):
@@ -493,6 +540,9 @@ class CivReader(QtCore.QThread):
         self._pending_af = None
         self._pending_levels = {}       # réglages 0x14 : sous-commande → valeur
         self._commands = queue.Queue()
+        self._memory_jobs = queue.Queue()
+        self._memory_scan = []          # canaux de la radio qui restent à lire
+        self._memory_reply = None
         self._tuner = None
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
         self._pending_span = None
@@ -594,6 +644,18 @@ class CivReader(QtCore.QThread):
 
     def set_power(self, level):
         self._pending_power = level
+
+    def read_memories(self):
+        """Relit les canaux 1 à 99 de la radio, un par tour de lecture."""
+        self._memory_scan = list(range(1, 100))
+
+    def write_memory(self, channel, hz, mode, name):
+        """Écrit un canal mémoire de la radio (1 à 99), puis le relit."""
+        self._memory_jobs.put((channel, hz, mode, name))
+
+    def clear_memory(self, channel):
+        """Vide un canal mémoire de la radio."""
+        self._memory_jobs.put((channel, None, None, None))
 
     def set_key_speed(self, level):
         self._pending_key_speed = level
@@ -793,6 +855,13 @@ class CivReader(QtCore.QThread):
             while not self._commands.empty():
                 self._command(ser, *self._commands.get())
                 changed = True
+            if not self._memory_jobs.empty():
+                # une écriture par tour : les mesures continuent
+                self._write_memory(ser, *self._memory_jobs.get())
+            if self._memory_scan:
+                # un canal à la fois : les mesures continuent pendant la lecture
+                channel = self._memory_scan.pop(0)
+                self.memory_channel.emit(channel, self._read_memory(ser, channel))
             level, self._pending_af = self._pending_af, None
             if level is not None:
                 self._command(ser, 0x14, 0x01, level // 100,
@@ -891,6 +960,50 @@ class CivReader(QtCore.QThread):
                     return cmd
         return None
 
+    def _read_memory(self, ser, channel):
+        """Contenu brut du canal (après son numéro), b"\xff" s'il est vide."""
+        self._memory_reply = None
+        for _ in range(3):
+            self._transact(ser, (0x1A, 0x00, 0x00, to_bcd_be(channel)), (0x1A, 0xFA))
+            if self._memory_reply is not None:
+                return self._memory_reply
+        return None
+
+    def _write_memory(self, ser, channel, hz, mode, name):
+        before = self._read_memory(ser, channel)
+        if before is None:
+            self.memory_written.emit(False, "La radio ne répond pas à la lecture des mémoires")
+            return
+        if before != b"\xff" and len(before) != MEMORY_DATA_SIZE:
+            # format inattendu : on n'écrit rien plutôt que d'abîmer le canal
+            self.memory_written.emit(False, f"Format de mémoire inconnu "
+                                            f"({len(before)} octets), rien n'est écrit")
+            return
+        if hz is None:
+            content = b"\xff"                       # canal vidé
+        elif before != b"\xff":
+            # canal déjà rempli : on ne change que fréquence, mode et nom, le
+            # reste (split, subtons) est gardé
+            content = memory_content(hz, mode, name, keep=before)
+        else:
+            content = memory_content(hz, mode, name)
+        reply = None
+        for _ in range(3):
+            reply = self._transact(ser, (0x1A, 0x00, 0x00, to_bcd_be(channel), *content),
+                                   (0xFB, 0xFA))
+            if reply is not None:
+                break
+        after = self._read_memory(ser, channel)
+        self.memory_channel.emit(channel, after)
+        if reply == 0xFB and after == content == b"\xff":
+            self.memory_written.emit(True, f"Canal {channel} de la radio vidé")
+        elif reply == 0xFB and after == content:
+            self.memory_written.emit(True, f"Canal {channel} de la radio écrit et vérifié")
+        elif reply == 0xFB and after is not None and after[1:7] == content[1:7]:
+            self.memory_written.emit(True, f"Canal {channel} écrit (fréquence et mode vérifiés)")
+        else:
+            self.memory_written.emit(False, f"La radio a refusé l'écriture du canal {channel}")
+
     def _emit_mode(self):
         if self._mode_code is not None:
             data = self._data_state is not None and self._data_state[0]
@@ -905,6 +1018,9 @@ class CivReader(QtCore.QThread):
         if len(frame) < 3 or frame[1] != RIG_ADDR:
             return None                     # écho de nos propres commandes
         cmd, data = frame[2], frame[3:]
+        if cmd == 0x1A and len(data) >= 4 and data[0] == 0x00:
+            self._memory_reply = bytes(data[3:])   # contenu d'un canal mémoire
+            return cmd
         if cmd == 0x27 and len(data) >= 4 and data[0] == 0x00:
             self._wave_part(bcd_be(data[2:3]), bcd_be(data[3:4]), data[4:])
             return None                     # données du scope, pas une réponse
@@ -1527,8 +1643,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.band_buttons[name] = button
         vu_row = (len(BANDS) + 1) // 2
         self.vu_meter = VuMeter()
-        # un peu détaché des bandes, centré dans la place qui reste
-        bands.setRowMinimumHeight(vu_row, 18)
+        # mémoires entre les bandes et le vu-mètre, centré dans la place qui reste
+        memory_button = QtWidgets.QPushButton("Mémoires…")
+        memory_button.setToolTip("Les fréquences mémorisées : double-clic pour y aller")
+        memory_button.clicked.connect(self.open_memories)
+        self.memory_window = None
+        self.radio_memories = {}        # canaux de la radio : canal → (nom, Hz, mode)
+        self.radio_memory_status = "Mémoires de la radio pas encore lues"
+        self.radio_memory_odd = set()   # canaux remplis mais illisibles : jamais écrasés
+        self.radio_memories_ready = False
+        self._memories_requested = False
+        bands.addWidget(memory_button, vu_row, 0, 1, 2)
         bands.addWidget(self.vu_meter, vu_row + 1, 0, 1, 2, QtCore.Qt.AlignCenter)
         bands.setRowStretch(vu_row + 1, 1)
 
@@ -1692,9 +1817,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.loopback = find_loopback_stream()
         if self.loopback:
-            _, volume, muted, current = self.loopback
+            _, volume, _, current = self.loopback
             self.pc_volume.setValue(volume)
-            self.mute_check.setChecked(muted)
+            # la coupure laissée par une session précédente (squelch fermé,
+            # émission) est retenue par PipeWire : on repart toujours non muet
+            self._pactl_stream("set-sink-input-mute", "0")
             for index, name, description in list_outputs(
                     {args.sink, RADIO_SINK, REMOTE_TX}):
                 self.pc_output.addItem(description, name)
@@ -2019,6 +2146,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.scope.connect(self.on_scope)
             self.civ.span.connect(self.on_span)
             self.civ.powered.connect(self.on_powered)
+            self.civ.memory_channel.connect(self.on_memory_channel)
             self.civ.squelch_open.connect(self.on_squelch)
             self.civ.status.connect(self.statusBar().showMessage)
             self.civ.start()
@@ -2485,6 +2613,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_timer.start()
         self._set_ptt_button(True)
 
+    def tune_with_mode(self, hz, mode):
+        """Règle la radio sur hz dans ce mode ; False si c'est impossible."""
+        if not self.civ or self.tx_active:
+            return False
+        if mode in MODE_NAMES and mode != self.mode_combo.currentText():
+            self.mode_combo.setCurrentText(mode)
+            self.civ.set_mode(mode)
+        self.tune_to(hz)
+        return True
+
+    def on_memory_channel(self, channel, content):
+        """Un canal de la radio vient d'être lu (au démarrage ou après écriture)."""
+        # réponses brutes gardées pour le diagnostic du format des mémoires
+        try:
+            with open(MEMORY_DUMP_FILE, "w" if channel == 1 else "a") as f:
+                f.write(f"{channel:2d} {len(content) if content else '-':>3} "
+                        f"{content.hex(' ') if content else 'pas de réponse'}\n")
+        except OSError:
+            pass
+        entry = radio_memory(content)
+        self.radio_memory_odd.discard(channel)
+        if entry:
+            self.radio_memories[channel] = entry
+        else:
+            self.radio_memories.pop(channel, None)
+            if content is None or content != b"\xff":
+                self.radio_memory_odd.add(channel)  # format inattendu : signalé
+        odd = len(self.radio_memory_odd)
+        if channel == 99 or self.radio_memories_ready:
+            self.radio_memories_ready = True
+            self.radio_memory_status = (
+                f"{len(self.radio_memories)} canaux lus dans la radio"
+                + (f", {odd} illisibles" if odd else ""))
+        else:
+            self.radio_memory_status = f"Lecture des mémoires de la radio… canal {channel}/99"
+        if self.memory_window:
+            self.memory_window.show_radio()
+
+    def open_memories(self):
+        if self.memory_window is None:
+            self.memory_window = MemoryWindow(self, MODE_NAMES, parse_frequency)
+            if self.civ:
+                self.civ.memory_written.connect(self.memory_window.on_memory_written)
+        bring_to_front(self.memory_window)
+
     def open_text_window(self):
         if self.text_window is None:
             self.text_window = DecodedTextWindow(self.decoder_text.document(),
@@ -2614,6 +2787,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_powered(self, on):
         self.radio_on = on
+        if on and self.civ and not self._memories_requested:
+            # mémoires de la radio lues une fois, dès qu'elle répond
+            self._memories_requested = True
+            self.civ.read_memories()
         self.vu_meter.setLit(on)
         self.power_button.setChecked(on)
         self.power_button.setText("⏻ ON" if on else "⏻ OFF")
@@ -2954,6 +3131,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.audio.stop()
         if self.civ:
             self.civ.stop()
+        # écoute rendue non muette, sinon PipeWire la garde coupée au lancement suivant
+        self._pactl_stream("set-sink-input-mute", "0")
         super().closeEvent(event)
 
 

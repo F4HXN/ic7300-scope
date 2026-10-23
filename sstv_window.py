@@ -236,23 +236,34 @@ class SstvWindow(QtWidgets.QWidget):
                 f"{mode.duration // 60:.0f} min {mode.duration % 60:02.0f} s)", mode.name)
         self.mode_combo.setCurrentIndex(self.mode_combo.findData("Martin M1"))
         self.mode_combo.currentIndexChanged.connect(self.update_preview)
-        self.text_edit = QtWidgets.QLineEdit()
-        self.text_edit.setPlaceholderText("ex. F4HXN")
-        self.text_edit.setToolTip("Texte écrit en haut de l'image (indicatif…)")
-        self.text_edit.textChanged.connect(self.update_preview)
-        self.text_color = QtGui.QColor("white")
-        self.color_button = QtWidgets.QPushButton()
-        self.color_button.setFixedWidth(40)
-        self.color_button.setToolTip("Couleur du texte")
-        self.color_button.clicked.connect(self.choose_text_color)
-        self._show_text_color()
-        text_row = QtWidgets.QHBoxLayout()
-        text_row.addWidget(self.text_edit)
-        text_row.addWidget(self.color_button)
+        # 4 lignes de texte : la 1re en grand en haut, les autres en bas
+        self.text_lines = []            # (champ, bouton de couleur, couleur)
+        text_rows = []
+        for placeholder, tip, color in (
+                ("ex. F4HXN", "En grand, en haut de l'image (indicatif…)", "white"),
+                ("ex. UR 595", "En bas de l'image", "#ffd600"),
+                ("ex. JEAN-PAUL · PUGET-THENIERS", "En bas de l'image", "white"),
+                ("ex. JN33KW · 73", "En bas de l'image", "white")):
+            edit = QtWidgets.QLineEdit()
+            edit.setPlaceholderText(placeholder)
+            edit.setToolTip(tip)
+            edit.textChanged.connect(self.update_preview)
+            button = QtWidgets.QPushButton()
+            button.setFixedWidth(40)
+            button.setToolTip("Couleur de cette ligne")
+            line = [edit, button, QtGui.QColor(color)]
+            button.clicked.connect(lambda _, line=line: self.choose_text_color(line))
+            self._show_text_color(line)
+            self.text_lines.append(line)
+            row = QtWidgets.QHBoxLayout()
+            row.addWidget(edit)
+            row.addWidget(button)
+            text_rows.append(row)
         choose = QtWidgets.QPushButton("Choisir une image…")
         choose.clicked.connect(self.choose_image)
         form.addRow("Mode", self.mode_combo)
-        form.addRow("Texte", text_row)
+        for number, row in enumerate(text_rows, 1):
+            form.addRow(f"Ligne {number}", row)
         form.addRow("", choose)
         self.tx_view = ImageView((320, 256))
         self.tx_info = QtWidgets.QLabel("")
@@ -323,16 +334,10 @@ class SstvWindow(QtWidgets.QWidget):
         choice = self.station.itemData(index)
         if choice is None:
             return
-        hz, mode = choice
-        main = self.main
-        if not main.civ or main.tx_active:
+        if not self.main.tune_with_mode(*choice):
             self.rx_status.setText("Radio non pilotée ou en émission : "
                                    "réglage impossible")
             return
-        if main.mode_combo.currentText() != mode:
-            main.mode_combo.setCurrentText(mode)
-            main.civ.set_mode(mode)
-        main.tune_to(hz)
         if self.decoder is self.decoders["fax"]:
             self.fax_invert.setChecked(False)   # en USB, la carte est à l'endroit
 
@@ -418,35 +423,53 @@ class SstvWindow(QtWidgets.QWidget):
             y = (scaled.height() - mode.height) // 2
             image = scaled.copy(x, y, mode.width, mode.height)
         image = image.convertToFormat(QtGui.QImage.Format_RGB888)
-        text = self.text_edit.text().strip()
+        painter = QtGui.QPainter(image)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        (title, _, title_color), *others = self.text_lines
+        text = title.text().strip()
         if text:
-            painter = QtGui.QPainter(image)
-            font = QtGui.QFont("Sans", max(mode.height // 9, 12), QtGui.QFont.Bold)
-            painter.setFont(font)
-            rect = QtCore.QRect(0, 4, mode.width, mode.height // 6)
-            path = QtGui.QPainterPath()
-            metrics = QtGui.QFontMetrics(font)
-            x = (mode.width - metrics.horizontalAdvance(text)) // 2
-            path.addText(x, 4 + metrics.ascent(), font, text)
-            painter.setRenderHint(QtGui.QPainter.Antialiasing)
-            # contour noir autour d'un texte clair, blanc autour d'un texte foncé
-            outline = "black" if self.text_color.lightness() > 100 else "white"
-            painter.strokePath(path, QtGui.QPen(QtGui.QColor(outline), 4))
-            painter.fillPath(path, self.text_color)
-            painter.end()
-            del rect
+            self._draw_line(painter, mode, text, title_color, mode.height // 9, top=4)
+        # lignes du bas, empilées depuis le bas : une ligne vide ne laisse pas de trou
+        bottom = mode.height - 4
+        for edit, _, color in reversed(others):
+            text = edit.text().strip()
+            if text:
+                bottom = self._draw_line(painter, mode, text, color,
+                                         mode.height // 15, bottom=bottom)
+        painter.end()
         return image
 
-    def choose_text_color(self):
-        color = QtWidgets.QColorDialog.getColor(self.text_color, self, "Couleur du texte")
+    @staticmethod
+    def _draw_line(painter, mode, text, color, size, top=None, bottom=None):
+        """Une ligne centrée, réduite si elle est trop large ; renvoie son haut."""
+        font = QtGui.QFont("Sans", max(size, 9), QtGui.QFont.Bold)
+        metrics = QtGui.QFontMetrics(font)
+        while metrics.horizontalAdvance(text) > mode.width - 8 and font.pointSize() > 7:
+            font.setPointSize(font.pointSize() - 1)
+            metrics = QtGui.QFontMetrics(font)
+        x = (mode.width - metrics.horizontalAdvance(text)) // 2
+        if top is None:
+            top = bottom - metrics.height()
+        path = QtGui.QPainterPath()
+        path.addText(x, top + metrics.ascent(), font, text)
+        # contour noir autour d'un texte clair, blanc autour d'un texte foncé
+        outline = "black" if color.lightness() > 100 else "white"
+        width = 4 if size >= 20 else 3
+        painter.strokePath(path, QtGui.QPen(QtGui.QColor(outline), width))
+        painter.fillPath(path, color)
+        return top
+
+    def choose_text_color(self, line):
+        color = QtWidgets.QColorDialog.getColor(line[2], self, "Couleur du texte")
         if color.isValid():
-            self.text_color = color
-            self._show_text_color()
+            line[2] = color
+            self._show_text_color(line)
             self.update_preview()
 
-    def _show_text_color(self):
-        self.color_button.setStyleSheet(
-            f"background: {self.text_color.name()}; border: 1px solid #546e7a;")
+    @staticmethod
+    def _show_text_color(line):
+        line[1].setStyleSheet(
+            f"background: {line[2].name()}; border: 1px solid #546e7a;")
 
     def update_preview(self):
         mode = self._mode()
