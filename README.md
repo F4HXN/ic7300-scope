@@ -26,6 +26,7 @@ dans une seule fenêtre.
 - [Piloter la radio depuis un autre PC](#piloter-la-radio-depuis-un-autre-pc)
 - [Scanner VHF/UHF](#scanner-vhfuhf)
 - [Organisation du code](#organisation-du-code)
+- [Historique des modifications](CHANGELOG.md)
 
 ---
 
@@ -231,6 +232,8 @@ python3 scanner_vhf_uhf.py
 | `scanner_vhf_uhf.py` | Scanner VHF/UHF piloté par Gqrx |
 | `install.sh` · `install-serveur.sh` | Entrées du menu des applications |
 | `reseau/` | Service systemd et partage du son en réseau |
+
+Toutes les modifications depuis la première version : [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
