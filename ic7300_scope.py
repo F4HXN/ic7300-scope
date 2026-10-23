@@ -76,6 +76,7 @@ STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
 # les autres viennent de « Ma station… » ; ^SK est le signe SK lié
 CW_MACROS = [
     ("CQ", "Appel général", "CQ CQ CQ DE {call} {call} {call} PSE K"),
+    ("QRZ?", "Qui m'appelle ? (indicatif mal reçu)", "QRZ? DE {call} K"),
     ("Répondre", "Répondre à un CQ", "{dest} {dest} DE {call} {call} K"),
     ("Rapport", "Premier passage : RST, prénom, QTH, locator",
      "{dest} DE {call} {gm} DR OM TNX FER CALL UR RST 599 599 "
@@ -1614,6 +1615,11 @@ class MainWindow(QtWidgets.QMainWindow):
         macro_row.addSpacing(10)
         macro_row.addWidget(QtWidgets.QLabel("Correspondant"))
         macro_row.addWidget(self.dest_call)
+        qrz_button = QtWidgets.QPushButton("🔎")
+        qrz_button.setToolTip("Fiche du correspondant sur qrz.com")
+        qrz_button.setMaximumWidth(36)
+        qrz_button.clicked.connect(self.on_qrz_lookup)
+        macro_row.addWidget(qrz_button)
         macro_row.addWidget(self.dest_name)
         macro_row.addSpacing(10)
         self.cw_macro_buttons = []
@@ -2044,6 +2050,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
         self.cw_text.setText(" ".join(text.format_map(values).split()))
         self.cw_text.setFocus()
+
+    def on_qrz_lookup(self):
+        call = self.dest_call.text().strip()
+        if not call:
+            self.statusBar().showMessage("Indiquer d'abord l'indicatif du correspondant")
+            self.dest_call.setFocus()
+            return
+        QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl(f"https://www.qrz.com/db/{QtCore.QUrl.toPercentEncoding(call).data().decode()}"))
 
     def on_cw_stop(self):
         if self.civ:
