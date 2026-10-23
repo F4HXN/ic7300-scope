@@ -1281,139 +1281,6 @@ class BarGraph(QtWidgets.QWidget):
                        QtCore.Qt.AlignCenter, label)
 
 
-class VuMeter(QtWidgets.QWidget):
-    """Vu-mètre à aiguille du son reçu, cadran crème éclairé.
-
-    0 VU = -18 dBFS (référence EBU). L'aiguille est déviée en proportion de
-    la tension, comme sur un vrai galvanomètre (graduations en dB serrées à
-    gauche), et suit la balistique VU : environ 300 ms pour monter, avec un
-    léger dépassement."""
-
-    REF_DBFS = -18.0
-    MARKS = [-20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3]
-    ARC = 100.0                 # ouverture du cadran (degrés)
-
-    def __init__(self, width=164, height=104):
-        super().__init__()
-        self.setFixedSize(width, height)
-        self.target = 0.0
-        self.pos = 0.0
-        self.speed = 0.0
-        self.lit = True
-        self._last = time.monotonic()
-        self._timer = QtCore.QTimer(self)
-        self._timer.timeout.connect(self._move)
-        self._timer.start(16)
-        self.setToolTip("Vu-mètre du son reçu (0 VU = -18 dBFS)")
-
-    @staticmethod
-    def _fraction(vu):
-        """Position de l'aiguille (0 à 1) pour un niveau en VU."""
-        return min(max(10 ** (vu / 20) / 10 ** (3 / 20), 0.0), 1.06)
-
-    def setValue(self, dbfs):
-        self.target = self._fraction(dbfs - self.REF_DBFS) if self.lit else 0.0
-
-    def setLit(self, lit):
-        self.lit = lit
-        if not lit:
-            self.target = 0.0
-        self.update()
-
-    def _move(self):
-        now = time.monotonic()
-        dt, self._last = min(now - self._last, 0.05), now
-        # galvanomètre : masse + ressort, amorti juste sous le critique
-        omega, zeta = 2 * math.pi * 2.2, 0.82
-        accel = omega * omega * (self.target - self.pos) - 2 * zeta * omega * self.speed
-        self.speed += accel * dt
-        self.pos += self.speed * dt
-        if abs(self.target - self.pos) > 1e-4 or abs(self.speed) > 1e-3:
-            self.update()
-
-    def _point(self, c, radius, fraction):
-        angle = math.radians(90 + self.ARC / 2 - fraction * self.ARC)
-        return QtCore.QPointF(c.x() + radius * math.cos(angle),
-                              c.y() - radius * math.sin(angle))
-
-    def paintEvent(self, event):
-        p = QtGui.QPainter(self)
-        p.setRenderHint(QtGui.QPainter.Antialiasing)
-        w, h = self.width(), self.height()
-        # boîtier et cadran
-        p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor("#15191d"))
-        p.drawRoundedRect(QtCore.QRectF(0, 0, w, h), 6, 6)
-        face = QtCore.QRectF(5, 5, w - 10, h - 10)
-        light = QtGui.QRadialGradient(face.center().x(), face.bottom(), face.width() * 0.8)
-        if self.lit:
-            light.setColorAt(0.0, QtGui.QColor("#fff4cf"))
-            light.setColorAt(0.7, QtGui.QColor("#f1dca0"))
-            light.setColorAt(1.0, QtGui.QColor("#cdb479"))
-        else:
-            light.setColorAt(0.0, QtGui.QColor("#8c8470"))
-            light.setColorAt(1.0, QtGui.QColor("#6a6353"))
-        p.setBrush(light)
-        p.drawRoundedRect(face, 4, 4)
-        # pivot sous le cadran : l'aiguille sort de la bande sombre du bas
-        c = QtCore.QPointF(w / 2, h - 8)
-        radius = h - 30
-        ink, red = QtGui.QColor("#1b1b1b"), QtGui.QColor("#c62828")
-        # arc : noir jusqu'à 0 VU, rouge au-delà
-        zero = self._fraction(0)
-        box = QtCore.QRectF(c.x() - radius, c.y() - radius, 2 * radius, 2 * radius)
-        for color, a, b, width in ((ink, 0.0, zero, 1.4), (red, zero, 1.0, 4.0)):
-            p.setPen(QtGui.QPen(color, width, cap=QtCore.Qt.FlatCap))
-            start = 90 + self.ARC / 2 - b * self.ARC
-            p.drawArc(box, round(start * 16), round((b - a) * self.ARC * 16))
-        font = p.font()
-        font.setPixelSize(9)
-        font.setBold(True)
-        p.setFont(font)
-        for vu in self.MARKS:
-            f = self._fraction(vu)
-            color = red if vu > 0 else ink
-            p.setPen(QtGui.QPen(color, 1.3))
-            p.drawLine(self._point(c, radius, f), self._point(c, radius + 5, f))
-            if vu in (-20, -10, -5, 0, 3) or w > 200:   # petit cadran : l'essentiel
-                label = self._point(c, radius + 12, f)
-                p.drawText(QtCore.QRectF(label.x() - 12, label.y() - 6, 24, 12),
-                           QtCore.Qt.AlignCenter, f"{vu:+d}" if vu > 0 else str(vu))
-        # graduation en pourcentage, sous l'arc
-        font.setPixelSize(7)
-        font.setBold(False)
-        p.setFont(font)
-        p.setPen(QtGui.QPen(ink, 1))
-        for pct in (0, 20, 40, 60, 80, 100):
-            f = pct / 100 * zero
-            p.drawLine(self._point(c, radius - 4, f), self._point(c, radius, f))
-            if w > 200 or pct in (0, 100):
-                label = self._point(c, radius - 11, f)
-                p.drawText(QtCore.QRectF(label.x() - 10, label.y() - 5, 20, 10),
-                           QtCore.Qt.AlignCenter, f"{pct} %" if pct else "0")
-        font.setPixelSize(15)
-        font.setBold(True)
-        font.setItalic(True)
-        p.setFont(font)
-        p.drawText(QtCore.QRectF(c.x() - 20, c.y() - radius * 0.62, 40, 18),
-                   QtCore.Qt.AlignCenter, "VU")
-        # aiguille, son ombre, puis la bande du pivot
-        tip = self._point(c, radius + 3, self.pos)
-        p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 50), 2.2))
-        p.drawLine(c + QtCore.QPointF(2, 2), tip + QtCore.QPointF(2, 2))
-        p.setPen(QtGui.QPen(ink, 1.6))
-        p.drawLine(c, tip)
-        p.setPen(QtCore.Qt.NoPen)
-        p.setBrush(QtGui.QColor("#15191d"))
-        p.drawRect(QtCore.QRectF(5, h - 18, w - 10, 13))
-        # reflet de la vitre
-        shine = QtGui.QLinearGradient(0, 5, 0, h * 0.5)
-        shine.setColorAt(0.0, QtGui.QColor(255, 255, 255, 70))
-        shine.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
-        p.setBrush(shine)
-        p.drawRoundedRect(QtCore.QRectF(5, 5, w - 10, h * 0.45), 4, 4)
-
-
 class DecodedTextWindow(QtWidgets.QWidget):
     """Le texte décodé en grand, dans une fenêtre à part (F11 : plein écran).
 
@@ -1646,9 +1513,8 @@ class MainWindow(QtWidgets.QMainWindow):
             button.clicked.connect(lambda _, n=name: self.on_band(n))
             bands.addWidget(button, i // 2, i % 2)
             self.band_buttons[name] = button
-        vu_row = (len(BANDS) + 1) // 2
-        self.vu_meter = VuMeter()
-        # mémoires entre les bandes et le vu-mètre, centré dans la place qui reste
+        memory_row = (len(BANDS) + 1) // 2
+        # mémoires et SSTV sous les bandes
         memory_button = QtWidgets.QPushButton("Mémoires…")
         memory_button.setToolTip("Les fréquences mémorisées : double-clic pour y aller")
         memory_button.clicked.connect(self.open_memories)
@@ -1658,9 +1524,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.radio_memory_odd = set()   # canaux remplis mais illisibles : jamais écrasés
         self.radio_memories_ready = False
         self._memories_requested = False
-        bands.addWidget(memory_button, vu_row, 0, 1, 2)
-        bands.addWidget(self.vu_meter, vu_row + 1, 0, 1, 2, QtCore.Qt.AlignCenter)
-        bands.setRowStretch(vu_row + 1, 1)
+        bands.addWidget(memory_button, memory_row, 0, 1, 2)
+        sstv_button = QtWidgets.QPushButton("SSTV…")
+        sstv_button.setToolTip("Réception et émission d'images SSTV, fax météo, "
+                               "dans une fenêtre à part")
+        sstv_button.clicked.connect(self.open_sstv)
+        bands.addWidget(sstv_button, memory_row + 1, 0, 1, 2)
+        bands.setRowStretch(memory_row + 2, 1)
 
         header = QtWidgets.QHBoxLayout()
         header.addLayout(left, stretch=1)
@@ -1881,11 +1751,6 @@ class MainWindow(QtWidgets.QMainWindow):
         text_window_button.clicked.connect(self.open_text_window)
         self.text_window = None
         decoder_row.addWidget(text_window_button)
-        sstv_button = QtWidgets.QPushButton("SSTV…")
-        sstv_button.setToolTip("Réception et émission d'images SSTV, "
-                               "dans une fenêtre à part")
-        sstv_button.clicked.connect(self.open_sstv)
-        decoder_row.addWidget(sstv_button)
         decoder_row.addSpacing(20)
         self.record_button = QtWidgets.QPushButton("● Enregistrer")
         self.record_button.setCheckable(True)
@@ -2276,7 +2141,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # spectre audio gardé aussi en vue RF : sert à caler le décodeur au clic
         self.audio_db = db if self.audio_db is None else 0.8 * self.audio_db + 0.2 * db
         self.level_meter.setValue(rms)
-        self.vu_meter.setValue(rms)
         self.level_value.setText(f"{rms:5.1f}")
         if self.view != "audio":
             return
@@ -2796,7 +2660,6 @@ class MainWindow(QtWidgets.QMainWindow):
             # mémoires de la radio lues une fois, dès qu'elle répond
             self._memories_requested = True
             self.civ.read_memories()
-        self.vu_meter.setLit(on)
         self.power_button.setChecked(on)
         self.power_button.setText("⏻ ON" if on else "⏻ OFF")
         self.power_button.setStyleSheet(
