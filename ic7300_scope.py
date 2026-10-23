@@ -233,7 +233,7 @@ def format_frequency(hz):
 
 
 def find_loopback_stream():
-    """Flux d'écoute radio → PC : (index, volume en %, muet) ou None."""
+    """Flux d'écoute radio → PC : (index, volume en %, muet, sortie) ou None."""
     try:
         out = subprocess.run(["pactl", "-f", "json", "list", "sink-inputs"],
                              capture_output=True, text=True, timeout=2).stdout
@@ -244,7 +244,7 @@ def find_loopback_stream():
         if stream["properties"].get("node.name") == LOOPBACK_STREAM:
             channel = next(iter(stream["volume"].values()))
             volume = int(channel["value_percent"].rstrip("%"))
-            return stream["index"], volume, stream["mute"]
+            return stream["index"], volume, stream["mute"], stream["sink"]
     return None
 
 
@@ -298,6 +298,25 @@ def list_microphones(exclude):
     return [(src["name"], src["properties"].get("device.description") or src["name"])
             for src in sources
             if not src["name"].endswith(".monitor") and src["name"] != exclude]
+
+
+def list_outputs(exclude):
+    """Sorties son du PC (index, nom, description), sans celles de la radio."""
+    try:
+        out = subprocess.run(["pactl", "-f", "json", "list", "sinks"],
+                             capture_output=True, text=True, timeout=2).stdout
+        sinks = json.loads(out)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    outputs = []
+    for sink in sinks:
+        if sink["name"] in exclude:
+            continue
+        description = sink["properties"].get("device.description")
+        if not description or description == "(null)":
+            description = sink["name"]
+        outputs.append((sink["index"], sink["name"], description))
+    return outputs
 
 
 def sink_volume(sink):
@@ -1566,6 +1585,15 @@ class MainWindow(QtWidgets.QMainWindow):
         volumes.addWidget(self.pc_volume)
         volumes.addWidget(self.pc_volume_label)
         volumes.addWidget(self.mute_check)
+        # sortie du PC où l'on entend la radio (haut-parleurs, casque…)
+        self.pc_output = QtWidgets.QComboBox()
+        self.pc_output.setToolTip("Sortie du PC où l'on entend la radio")
+        self.pc_output.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.pc_output.setMinimumContentsLength(18)
+        volumes.addSpacing(10)
+        volumes.addWidget(QtWidgets.QLabel("Sortie"))
+        volumes.addWidget(self.pc_output)
         volumes.addSpacing(20)
         volumes.addWidget(QtWidgets.QLabel("AF radio"))
         volumes.addWidget(self.af_slider)
@@ -1593,16 +1621,22 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.loopback = find_loopback_stream()
         if self.loopback:
-            _, volume, muted = self.loopback
+            _, volume, muted, current = self.loopback
             self.pc_volume.setValue(volume)
             self.mute_check.setChecked(muted)
+            for index, name, description in list_outputs(
+                    {args.sink, RADIO_SINK, REMOTE_TX}):
+                self.pc_output.addItem(description, name)
+                if index == current:
+                    self.pc_output.setCurrentIndex(self.pc_output.count() - 1)
         else:
-            for widget in (self.pc_volume, self.mute_check):
+            for widget in (self.pc_volume, self.mute_check, self.pc_output):
                 widget.setEnabled(False)
                 widget.setToolTip("Écoute radio → PC introuvable dans PipeWire")
         self.pc_volume_label.setText(f"{self.pc_volume.value()} %")
         self.pc_volume.valueChanged.connect(self.on_pc_volume)
         self.mute_check.toggled.connect(self.on_mute)
+        self.pc_output.currentIndexChanged.connect(self.on_pc_output)
         self.af_slider.setEnabled(False)    # activé quand la radio répond
         self.af_slider.valueChanged.connect(self.on_af_slider)
         layout.addLayout(controls)
@@ -2491,6 +2525,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_pc_volume(self, value):
         self.pc_volume_label.setText(f"{value} %")
         self._pactl_stream("set-sink-input-volume", f"{value}%")
+
+    def on_pc_output(self, *_):
+        self._pactl_stream("move-sink-input", self.pc_output.currentData())
 
     def on_mute(self, *_):
         muted = self.mute_check.isChecked() or self.tx_muted_listen or self.sql_closed
