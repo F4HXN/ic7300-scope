@@ -86,6 +86,20 @@ CW_MACROS = [
     ("Fin", "Réponse à la fin du correspondant",
      "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} ^SK"),
 ]
+# abréviations de fin de message : texte, sens
+CW_ENDINGS = [
+    ("K", "À vous (invitation à émettre)"),
+    ("KN", "À vous seul, les autres s'abstiennent"),
+    ("PSE K", "S'il vous plaît, à vous"),
+    ("BK", "Coupure, réponse rapide"),
+    ("^AR", "Fin de message"),
+    ("^AR K", "Fin de message, à vous"),
+    ("^SK", "Fin de contact"),
+    ("73 ^SK", "Amitiés, fin de contact"),
+    ("TU 73 ^SK", "Merci, amitiés, fin de contact"),
+    ("73 ES GD DX ^SK", "Amitiés et bons DX, fin de contact"),
+    ("TU EE", "Merci (le « dit-dit » final)"),
+]
 # bandes émission de l'IC-7300 : nom, limites (Hz), fréquence et mode de départ
 BANDS = [("160m", 1_810_000, 2_000_000, 1_850_000, "LSB"),
          ("80m", 3_500_000, 3_800_000, 3_700_000, "LSB"),
@@ -1856,6 +1870,20 @@ class MainWindow(QtWidgets.QMainWindow):
             button.clicked.connect(lambda _, text=text: self.on_cw_macro(text))
             macro_row.addWidget(button)
             self.cw_macro_buttons.append(button)
+        # abréviation de fin : remplace celle qui termine déjà le message
+        self.cw_ending = QtWidgets.QComboBox()
+        self.cw_ending.addItem("Fin de message…", None)
+        for text, meaning in CW_ENDINGS:
+            self.cw_ending.addItem(f"{text.replace('^', '')}  ({meaning})", text)
+        self.cw_ending.setToolTip("Ajoute une abréviation à la fin du message CW, "
+                                  "à la place de celle qui y est déjà")
+        self.cw_ending.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cw_ending.setMinimumContentsLength(14)
+        self.cw_ending.activated.connect(self.on_cw_ending)
+        macro_row.addSpacing(10)
+        macro_row.addWidget(self.cw_ending)
+        self.cw_macro_buttons.append(self.cw_ending)
         macro_row.addStretch()
         # juste sous le texte décodé : réception puis réponse
         index = layout.indexOf(self.decoder_text) + 1
@@ -2283,6 +2311,21 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.on_station()
                 return
         self.cw_text.setText(" ".join(text.format_map(values).split()))
+        self.cw_text.setFocus()
+
+    def on_cw_ending(self, index):
+        ending = self.cw_ending.itemData(index)
+        self.cw_ending.setCurrentIndex(0)
+        if not ending:
+            return
+        words = self.cw_text.text().split()
+        # retire l'abréviation de fin déjà présente, la plus longue d'abord
+        for old, _ in sorted(CW_ENDINGS, key=lambda e: -len(e[0].split())):
+            n = len(old.split())
+            if words[-n:] == old.split():
+                del words[-n:]
+                break
+        self.cw_text.setText(" ".join(words + [ending]))
         self.cw_text.setFocus()
 
     def on_qrz_lookup(self):
