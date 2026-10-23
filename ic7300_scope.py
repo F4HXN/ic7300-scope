@@ -911,8 +911,12 @@ class CivReader(QtCore.QThread):
             for query in queries:
                 if not self._running:
                     break               # fermeture : on remet la radio sans attendre
+                if (self._pending_freq is not None or self._pending_ptt is not None
+                        or self._pending_onoff is not None):
+                    break               # clic ou PTT : on l'envoie sans finir la série
                 self._transact(ser, query, (query[0],))
-            time.sleep(0.05)
+            if self._pending_freq is None:
+                time.sleep(0.05)
 
     def _scope_setup(self, ser):
         """Scope de la radio centré sur la fréquence, données envoyées en CI-V."""
@@ -1025,7 +1029,8 @@ class CivReader(QtCore.QThread):
             self._wave_part(bcd_be(data[2:3]), bcd_be(data[3:4]), data[4:])
             return None                     # données du scope, pas une réponse
         if cmd in (0x00, 0x03) and len(data) == 5:
-            self.frequency.emit(bcd_le(data))
+            if self._pending_freq is None:  # sinon, ancienne fréquence : l'affichage reculerait
+                self.frequency.emit(bcd_le(data))
         elif cmd in (0x01, 0x04) and data:
             self._mode_code = data[0]
             if len(data) >= 2:
