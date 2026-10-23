@@ -1530,7 +1530,6 @@ class MainWindow(QtWidgets.QMainWindow):
                                "dans une fenêtre à part")
         sstv_button.clicked.connect(self.open_sstv)
         bands.addWidget(sstv_button, memory_row + 1, 0, 1, 2)
-        bands.setRowStretch(memory_row + 2, 1)
 
         header = QtWidgets.QHBoxLayout()
         header.addLayout(left, stretch=1)
@@ -1716,6 +1715,7 @@ class MainWindow(QtWidgets.QMainWindow):
         volumes.addStretch()
         enlarge_slider_labels(volumes)
         layout.addLayout(volumes)
+        tx_row_index = layout.count()     # ligne d'émission juste sous les volumes
 
         # Décodeurs CW, RTTY, FT8 et FT4
         decoder_row = QtWidgets.QHBoxLayout()
@@ -1751,19 +1751,16 @@ class MainWindow(QtWidgets.QMainWindow):
         text_window_button.clicked.connect(self.open_text_window)
         self.text_window = None
         decoder_row.addWidget(text_window_button)
-        decoder_row.addSpacing(20)
-        self.record_button = QtWidgets.QPushButton("● Enregistrer")
+        self.record_button = QtWidgets.QPushButton("● Enreg.")
         self.record_button.setCheckable(True)
         self.record_button.setToolTip(f"Enregistre le son de la radio dans {RECORD_DIR}")
         self.record_button.toggled.connect(self.on_record)
-        self.record_label = QtWidgets.QLabel("")
-        self.record_label.setStyleSheet("font: 11pt monospace;")
         record_folder = QtWidgets.QPushButton("Dossier")
         record_folder.setToolTip("Ouvrir le dossier des enregistrements")
         record_folder.clicked.connect(self.open_record_folder)
-        decoder_row.addWidget(self.record_button)
-        decoder_row.addWidget(self.record_label)
-        decoder_row.addWidget(record_folder)
+        # sous SSTV, dans la colonne des bandes
+        bands.addWidget(self.record_button, memory_row + 2, 0)
+        bands.addWidget(record_folder, memory_row + 2, 1)
         self.record_timer = QtCore.QTimer(self)
         self.record_timer.setInterval(500)
         self.record_timer.timeout.connect(self.update_record_label)
@@ -1845,9 +1842,13 @@ class MainWindow(QtWidgets.QMainWindow):
         tx_row.addWidget(self.alc_slider_label)
         tx_row.addWidget(self.tx_meter_label)
         tx_row.addStretch()
-        tx_row.addWidget(self.ptt_button)
+        # sous Enreg./Dossier, dans la colonne des bandes
+        bands.addWidget(self.ptt_button, memory_row + 3, 0, 1, 2)
+        bands.setRowStretch(memory_row + 4, 1)
+        self._set_ptt_button(False)
         enlarge_slider_labels(tx_row)
-        layout.addLayout(tx_row)
+        layout.insertLayout(tx_row_index, tx_row)
+        layout.insertSpacing(tx_row_index + 1, 32)  # espace avant le décodeur
 
         # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
         cw_row = QtWidgets.QHBoxLayout()
@@ -2585,7 +2586,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ptt_button.blockSignals(False)
         self.ptt_button.setText("■ ARRÊTER" if on else "ÉMETTRE")
         self.ptt_button.setStyleSheet(
-            "background: #c62828; color: white; font-weight: bold;" if on else "")
+            "background: #c62828; color: white; font-weight: bold;" if on else
+            "border: 2px solid #c62828; border-radius: 3px; font-weight: bold;")
 
     def check_tx(self):
         elapsed = time.monotonic() - self.tx_started
@@ -2966,23 +2968,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.statusBar().showMessage(f"Enregistrement impossible : {e}")
                 self.record_button.setChecked(False)
                 return
-            self.record_button.setText("■ Arrêter")
             self.record_button.setStyleSheet("background: #c62828; color: white;")
             self.record_timer.start()
             self.update_record_label()
         else:
             self.audio.stop_recording()
             self.record_timer.stop()
-            self.record_button.setText("● Enregistrer")
+            self.record_button.setText("● Enreg.")
             self.record_button.setStyleSheet("")
-            self.record_label.setText("")
+            self.record_button.setToolTip(f"Enregistre le son de la radio dans {RECORD_DIR}")
             if self.record_path:
                 self.statusBar().showMessage(f"Enregistré : {self.record_path}")
 
     def update_record_label(self):
         seconds = self.audio.recorded_frames // RATE
         size = self.audio.recorded_frames * 2 / 1e6
-        self.record_label.setText(f"{seconds // 60:02d}:{seconds % 60:02d} · {size:.1f} Mo")
+        # durée dans le bouton (clic pour arrêter), taille en bulle d'aide
+        self.record_button.setText(f"■ {seconds // 60:02d}:{seconds % 60:02d}")
+        self.record_button.setToolTip(f"Enregistrement en cours · {size:.1f} Mo\n"
+                                      "Clic pour arrêter")
 
     def open_record_folder(self):
         os.makedirs(RECORD_DIR, exist_ok=True)
