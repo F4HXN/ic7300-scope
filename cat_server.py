@@ -37,7 +37,10 @@ def keepalive(conn):
 
 def serve(conn, args):
     try:
-        ser = serial.Serial(args.serial, args.baud, timeout=0, exclusive=True)
+        ser = serial.Serial(None, args.baud, timeout=0, exclusive=True)
+        ser.port = args.serial
+        ser.dtr = False             # au repos : USB Keying (CW) sur DTR manipulerait la radio
+        ser.open()
     except serial.SerialException as e:
         log(f"port série indisponible ({e}) : l'appli tourne-t-elle sur ce PC ?")
         return

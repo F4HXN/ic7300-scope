@@ -61,7 +61,7 @@ ni interface externe ni logiciel de pilotage à installer.
 |---|---|
 | **Bandes** | De 160 m à 4 m, fréquence et mode de départ pour chacune |
 | **Réglages** | Volume, AF, **RF GAIN**, **SQL**, puissance, niveau TX |
-| **Boutons** | `TUNE`, `ATU`, `MONI`, filtres `FIL1-3`, marche/arrêt `⏻` |
+| **Boutons** | `TUNE`, `ATU`, filtres `FIL1-3`, marche/arrêt `⏻` |
 | **Sécurité** | L'écoute sur le PC se coupe pendant toute émission (pas de larsen) |
 
 ### 🔤 Décodeurs

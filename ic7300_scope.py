@@ -23,6 +23,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
+from cw_pioche import hand_timing
 from psk31_decoder import Psk31Decoder
 from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
@@ -433,7 +434,6 @@ class CivReader(QtCore.QThread):
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
     level = QtCore.pyqtSignal(int, int)         # réglage 0x14 (RF 0x02, SQL 0x03), 0 à 255
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
-    monitor = QtCore.pyqtSignal(bool)           # MONI : écoute de sa propre émission
     filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
     power = QtCore.pyqtSignal(int)              # puissance réglée, 0 à 255
     key_speed = QtCore.pyqtSignal(int)          # vitesse du manipulateur, 0 à 255
@@ -482,22 +482,36 @@ class CivReader(QtCore.QThread):
         # réglages du scope de la radio, remis à la fermeture
         self._scope_mode = None
         self._scope_speed = None
+        # CW à la pioche : manipulation par la ligne DTR, dans son propre fil
+        self._ser = None
+        self._hand_queue = queue.Queue()
+        self._hand_stop = threading.Event()
+        self._hand_thread = None
 
     def run(self):
         while self._running:
             try:
                 # chemin du port, ou socket://hôte:port (cat_server.py)
-                with serial.serial_for_url(self.port, self.baud, timeout=0.05,
-                                           exclusive=True) as ser:
+                ser = serial.serial_for_url(self.port, self.baud, timeout=0.05,
+                                            exclusive=True, do_not_open=True)
+                # DTR au repos : avec le menu USB Keying (CW) sur DTR, la
+                # ligne levée à l'ouverture manipulerait la radio
+                ser.dtr = False
+                ser.open()
+                with ser:
+                    self._ser = ser
                     self.status.emit("CAT connecté")
                     self._buf = bytearray()
                     self._last_reply = time.monotonic()
                     self._recover(ser)
                     self._scope_setup(ser)
                     self._poll(ser)
+                    self._hand_stop.set()
                     self._release(ser)
                     self._scope_restore(ser)
+                    self._ser = None
             except (serial.SerialException, OSError) as e:
+                self._ser = None
                 self.status.emit(f"CAT indisponible : {e}")
                 for _ in range(20):
                     if not self._running:
@@ -535,9 +549,6 @@ class CivReader(QtCore.QThread):
     def set_atu(self, on):
         self._commands.put((0x1C, 0x01, 0x01 if on else 0x00))
 
-    def set_monitor(self, on):
-        self._commands.put((0x16, 0x45, 0x01 if on else 0x00))
-
     def set_filter(self, number):
         """FIL1 à FIL3 : même mode, autre filtre (en mode data, celui du data)."""
         self._filter = number
@@ -556,14 +567,58 @@ class CivReader(QtCore.QThread):
         """Texte émis en CW par le manipulateur de la radio (mode CW).
 
         Sans BK-IN la radio ne passe pas en émission : on met le semi BK-IN."""
+        self._break_in_for_cw()
+        for i in range(0, len(text), 30):       # 30 caractères par trame
+            self._commands.put((0x17, *text[i:i + 30].encode("ascii")))
+
+    def send_cw_hand(self, text, wpm):
+        """Texte émis comme à la pioche : rythme irrégulier d'une main, la
+        radio étant manipulée par la ligne DTR (menu USB Keying (CW) sur DTR)."""
+        self._break_in_for_cw()
+        if self._hand_thread is not None and self._hand_stop.is_set():
+            self._hand_thread.join(0.5)     # message arrêté : le fil se termine
+        self._hand_queue.put((text, wpm))
+        if self._hand_thread is None or not self._hand_thread.is_alive():
+            self._hand_stop.clear()
+            self._hand_thread = threading.Thread(target=self._hand_key, daemon=True)
+            self._hand_thread.start()
+
+    def _break_in_for_cw(self):
         if self._break_in == 0x00:
             self._commands.put((0x16, 0x47, 0x01))
             self._break_in = 0x01
             self.status.emit("BK-IN mis en semi pour émettre la CW")
-        for i in range(0, len(text), 30):       # 30 caractères par trame
-            self._commands.put((0x17, *text[i:i + 30].encode("ascii")))
+
+    def _hand_key(self):
+        ser = self._ser
+        try:
+            while not self._hand_stop.is_set():
+                try:
+                    text, wpm = self._hand_queue.get_nowait()
+                except queue.Empty:
+                    return
+                # échéances cumulées : les retards de sleep ne s'additionnent pas
+                deadline = time.monotonic()
+                for down, duration in hand_timing(text, wpm):
+                    if self._hand_stop.is_set() or ser is not self._ser:
+                        return
+                    ser.dtr = down
+                    deadline += duration
+                    self._hand_stop.wait(max(0.0, deadline - time.monotonic()))
+                ser.dtr = False
+        except (serial.SerialException, OSError) as e:
+            self.status.emit(f"Manipulation DTR impossible : {e}")
+        finally:
+            try:
+                if ser is not None and ser.is_open:
+                    ser.dtr = False
+            except (serial.SerialException, OSError):
+                pass
 
     def stop_cw(self):
+        self._hand_stop.set()
+        while not self._hand_queue.empty():
+            self._hand_queue.get_nowait()
         self._commands.put((0x17, 0xFF))
 
     def set_onoff(self, on):
@@ -739,7 +794,7 @@ class CivReader(QtCore.QThread):
             elif n % 10 == 0:
                 queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
                            (0x14, 0x01), (0x14, 0x02), (0x14, 0x03), (0x14, 0x0A), (0x1C, 0x00),
-                           (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65), (0x16, 0x45),
+                           (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65),
                            (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47), (0x15, 0x01)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
@@ -837,8 +892,6 @@ class CivReader(QtCore.QThread):
             self._break_in = data[1]
         elif cmd == 0x14 and len(data) == 3 and data[0] == 0x0C:
             self.key_speed.emit(bcd_be(data[1:]))
-        elif cmd == 0x16 and len(data) == 2 and data[0] == 0x45:
-            self.monitor.emit(data[1] == 0x01)
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x00:
             self._tx = data[1] == 0x01
             self.transmitting.emit(self._tx)
@@ -1072,6 +1125,139 @@ class BarGraph(QtWidgets.QWidget):
                        QtCore.Qt.AlignCenter, label)
 
 
+class VuMeter(QtWidgets.QWidget):
+    """Vu-mètre à aiguille du son reçu, cadran crème éclairé.
+
+    0 VU = -18 dBFS (référence EBU). L'aiguille est déviée en proportion de
+    la tension, comme sur un vrai galvanomètre (graduations en dB serrées à
+    gauche), et suit la balistique VU : environ 300 ms pour monter, avec un
+    léger dépassement."""
+
+    REF_DBFS = -18.0
+    MARKS = [-20, -10, -7, -5, -3, -2, -1, 0, 1, 2, 3]
+    ARC = 100.0                 # ouverture du cadran (degrés)
+
+    def __init__(self, width=164, height=104):
+        super().__init__()
+        self.setFixedSize(width, height)
+        self.target = 0.0
+        self.pos = 0.0
+        self.speed = 0.0
+        self.lit = True
+        self._last = time.monotonic()
+        self._timer = QtCore.QTimer(self)
+        self._timer.timeout.connect(self._move)
+        self._timer.start(16)
+        self.setToolTip("Vu-mètre du son reçu (0 VU = -18 dBFS)")
+
+    @staticmethod
+    def _fraction(vu):
+        """Position de l'aiguille (0 à 1) pour un niveau en VU."""
+        return min(max(10 ** (vu / 20) / 10 ** (3 / 20), 0.0), 1.06)
+
+    def setValue(self, dbfs):
+        self.target = self._fraction(dbfs - self.REF_DBFS) if self.lit else 0.0
+
+    def setLit(self, lit):
+        self.lit = lit
+        if not lit:
+            self.target = 0.0
+        self.update()
+
+    def _move(self):
+        now = time.monotonic()
+        dt, self._last = min(now - self._last, 0.05), now
+        # galvanomètre : masse + ressort, amorti juste sous le critique
+        omega, zeta = 2 * math.pi * 2.2, 0.82
+        accel = omega * omega * (self.target - self.pos) - 2 * zeta * omega * self.speed
+        self.speed += accel * dt
+        self.pos += self.speed * dt
+        if abs(self.target - self.pos) > 1e-4 or abs(self.speed) > 1e-3:
+            self.update()
+
+    def _point(self, c, radius, fraction):
+        angle = math.radians(90 + self.ARC / 2 - fraction * self.ARC)
+        return QtCore.QPointF(c.x() + radius * math.cos(angle),
+                              c.y() - radius * math.sin(angle))
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        # boîtier et cadran
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor("#15191d"))
+        p.drawRoundedRect(QtCore.QRectF(0, 0, w, h), 6, 6)
+        face = QtCore.QRectF(5, 5, w - 10, h - 10)
+        light = QtGui.QRadialGradient(face.center().x(), face.bottom(), face.width() * 0.8)
+        if self.lit:
+            light.setColorAt(0.0, QtGui.QColor("#fff4cf"))
+            light.setColorAt(0.7, QtGui.QColor("#f1dca0"))
+            light.setColorAt(1.0, QtGui.QColor("#cdb479"))
+        else:
+            light.setColorAt(0.0, QtGui.QColor("#8c8470"))
+            light.setColorAt(1.0, QtGui.QColor("#6a6353"))
+        p.setBrush(light)
+        p.drawRoundedRect(face, 4, 4)
+        # pivot sous le cadran : l'aiguille sort de la bande sombre du bas
+        c = QtCore.QPointF(w / 2, h - 8)
+        radius = h - 30
+        ink, red = QtGui.QColor("#1b1b1b"), QtGui.QColor("#c62828")
+        # arc : noir jusqu'à 0 VU, rouge au-delà
+        zero = self._fraction(0)
+        box = QtCore.QRectF(c.x() - radius, c.y() - radius, 2 * radius, 2 * radius)
+        for color, a, b, width in ((ink, 0.0, zero, 1.4), (red, zero, 1.0, 4.0)):
+            p.setPen(QtGui.QPen(color, width, cap=QtCore.Qt.FlatCap))
+            start = 90 + self.ARC / 2 - b * self.ARC
+            p.drawArc(box, round(start * 16), round((b - a) * self.ARC * 16))
+        font = p.font()
+        font.setPixelSize(9)
+        font.setBold(True)
+        p.setFont(font)
+        for vu in self.MARKS:
+            f = self._fraction(vu)
+            color = red if vu > 0 else ink
+            p.setPen(QtGui.QPen(color, 1.3))
+            p.drawLine(self._point(c, radius, f), self._point(c, radius + 5, f))
+            if vu in (-20, -10, -5, 0, 3) or w > 200:   # petit cadran : l'essentiel
+                label = self._point(c, radius + 12, f)
+                p.drawText(QtCore.QRectF(label.x() - 12, label.y() - 6, 24, 12),
+                           QtCore.Qt.AlignCenter, f"{vu:+d}" if vu > 0 else str(vu))
+        # graduation en pourcentage, sous l'arc
+        font.setPixelSize(7)
+        font.setBold(False)
+        p.setFont(font)
+        p.setPen(QtGui.QPen(ink, 1))
+        for pct in (0, 20, 40, 60, 80, 100):
+            f = pct / 100 * zero
+            p.drawLine(self._point(c, radius - 4, f), self._point(c, radius, f))
+            if w > 200 or pct in (0, 100):
+                label = self._point(c, radius - 11, f)
+                p.drawText(QtCore.QRectF(label.x() - 10, label.y() - 5, 20, 10),
+                           QtCore.Qt.AlignCenter, f"{pct} %" if pct else "0")
+        font.setPixelSize(15)
+        font.setBold(True)
+        font.setItalic(True)
+        p.setFont(font)
+        p.drawText(QtCore.QRectF(c.x() - 20, c.y() - radius * 0.62, 40, 18),
+                   QtCore.Qt.AlignCenter, "VU")
+        # aiguille, son ombre, puis la bande du pivot
+        tip = self._point(c, radius + 3, self.pos)
+        p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0, 50), 2.2))
+        p.drawLine(c + QtCore.QPointF(2, 2), tip + QtCore.QPointF(2, 2))
+        p.setPen(QtGui.QPen(ink, 1.6))
+        p.drawLine(c, tip)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(QtGui.QColor("#15191d"))
+        p.drawRect(QtCore.QRectF(5, h - 18, w - 10, 13))
+        # reflet de la vitre
+        shine = QtGui.QLinearGradient(0, 5, 0, h * 0.5)
+        shine.setColorAt(0.0, QtGui.QColor(255, 255, 255, 70))
+        shine.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+        p.setBrush(shine)
+        p.drawRoundedRect(QtCore.QRectF(5, 5, w - 10, h * 0.45), 4, 4)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, args):
         super().__init__()
@@ -1102,9 +1288,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.step_combo.setCurrentIndex(2)
         self.step_combo.setToolTip("Pas de la molette sur la fréquence")
         self.freq_entry = QtWidgets.QLineEdit()
-        self.freq_entry.setPlaceholderText("7074 ou 14.074")
+        self.freq_entry.setPlaceholderText("14.074")
         self.freq_entry.setToolTip("kHz, MHz (avec un point) ou Hz, puis Entrée")
-        self.freq_entry.setMaximumWidth(130)
+        self.freq_entry.setFixedWidth(175)
+        self.freq_entry.setStyleSheet("font: 15pt monospace; padding: 2px 4px;")
         self.freq_entry.returnPressed.connect(self.on_freq_entered)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(MODE_NAMES)
@@ -1132,7 +1319,9 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.mode_combo)
         top.addLayout(filters)
         top.addSpacing(20)
-        top.addWidget(QtWidgets.QLabel("Aller à"))
+        goto_label = QtWidgets.QLabel("Aller à")
+        goto_label.setStyleSheet("font-size: 14pt;")
+        top.addWidget(goto_label)
         top.addWidget(self.freq_entry)
         top.addStretch()
         top.addWidget(self.cursor_label)
@@ -1221,14 +1410,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.atu_button.setCheckable(True)
         self.atu_button.setToolTip("Boîte d'accord interne en service")
         self.atu_button.clicked.connect(self.on_atu)
-        self.monitor_button = QtWidgets.QPushButton("MONI")
-        self.monitor_button.setCheckable(True)
-        self.monitor_button.setToolTip("Moniteur de la radio : on entend sa propre "
-                                       "émission (niveau réglé dans la radio, MONI)")
-        self.monitor_button.clicked.connect(self.on_monitor)
         vfo.addWidget(self.tune_button, 4, 0, 1, 2)
-        vfo.addWidget(self.atu_button, 4, 2)
-        vfo.addWidget(self.monitor_button, 4, 3)
+        vfo.addWidget(self.atu_button, 4, 2, 1, 2)
         self.power_button = QtWidgets.QPushButton("⏻ OFF")
         self.power_button.setCheckable(True)
         self.power_button.setToolTip("Met la radio en marche ou l'arrête")
@@ -1255,7 +1438,12 @@ class MainWindow(QtWidgets.QMainWindow):
             button.clicked.connect(lambda _, n=name: self.on_band(n))
             bands.addWidget(button, i // 2, i % 2)
             self.band_buttons[name] = button
-        bands.setRowStretch(len(BANDS) // 2, 1)
+        vu_row = (len(BANDS) + 1) // 2
+        self.vu_meter = VuMeter()
+        # un peu détaché des bandes, centré dans la place qui reste
+        bands.setRowMinimumHeight(vu_row, 18)
+        bands.addWidget(self.vu_meter, vu_row + 1, 0, 1, 2, QtCore.Qt.AlignCenter)
+        bands.setRowStretch(vu_row + 1, 1)
 
         header = QtWidgets.QHBoxLayout()
         header.addLayout(left, stretch=1)
@@ -1569,6 +1757,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cw_speed.setToolTip("Vitesse du manipulateur de la radio")
         self.cw_speed.setEnabled(False)         # activé quand la radio répond
         self.cw_speed.valueChanged.connect(self.on_cw_speed)
+        self.cw_hand = QtWidgets.QCheckBox("Pioche")
+        self.cw_hand.setToolTip(
+            "Frappe humaine, comme au manipulateur droit : rythme irrégulier\n"
+            "au lieu des points et traits parfaits du manipulateur de la radio.\n"
+            "Menu de la radio : SET > Connectors > USB SEND/Keying >\n"
+            "USB Keying (CW) sur DTR.")
         self.cw_send_button = QtWidgets.QPushButton("Envoyer")
         self.cw_send_button.clicked.connect(self.on_cw_send)
         self.cw_stop_button = QtWidgets.QPushButton("Stop")
@@ -1577,6 +1771,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cw_row.addWidget(QtWidgets.QLabel("CW"))
         cw_row.addWidget(self.cw_text, stretch=1)
         cw_row.addWidget(self.cw_speed)
+        cw_row.addWidget(self.cw_hand)
         cw_row.addWidget(self.cw_send_button)
         cw_row.addWidget(self.cw_stop_button)
         # indicatif et messages tout faits
@@ -1592,6 +1787,14 @@ class MainWindow(QtWidgets.QMainWindow):
         except (OSError, ValueError):
             pass
         self.callsign.setText(self.station.get("callsign", ""))
+        if args.port.startswith("socket://"):
+            # la ligne DTR ne passe pas par le réseau
+            self.cw_hand.setToolTip("Pioche impossible avec --remote : la ligne "
+                                    "DTR de la radio ne passe pas par le réseau")
+            self.station["pioche"] = False
+            self.cw_hand.setEnabled(False)
+        self.cw_hand.setChecked(bool(self.station.get("pioche")))
+        self.cw_hand.toggled.connect(self.on_cw_hand)
         station_button = QtWidgets.QPushButton("Ma station…")
         station_button.setToolTip("Prénom, QTH, locator et matériel des messages")
         station_button.clicked.connect(self.on_station)
@@ -1684,7 +1887,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.af_gain.connect(self.on_af_gain)
             self.civ.level.connect(self.on_level)
             self.civ.tuner.connect(self.on_tuner)
-            self.civ.monitor.connect(self.monitor_button.setChecked)
             self.civ.power.connect(self.on_power)
             self.civ.key_speed.connect(self.on_key_speed)
             self.civ.transmitting.connect(self.on_transmitting)
@@ -1819,6 +2021,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # spectre audio gardé aussi en vue RF : sert à caler le décodeur au clic
         self.audio_db = db if self.audio_db is None else 0.8 * self.audio_db + 0.2 * db
         self.level_meter.setValue(rms)
+        self.vu_meter.setValue(rms)
         self.level_value.setText(f"{rms:5.1f}")
         if self.view != "audio":
             return
@@ -1989,9 +2192,16 @@ class MainWindow(QtWidgets.QMainWindow):
         text = " ".join(text.split())
         if not text or not self.civ:
             return
-        self.civ.send_cw(text)
+        if self.cw_hand.isChecked():
+            self.civ.send_cw_hand(text, self.cw_speed.value())
+        else:
+            self.civ.send_cw(text)
         self.cw_text.clear()
         self.statusBar().showMessage(f"CW : {text}")
+
+    def on_cw_hand(self, on):
+        self.station["pioche"] = on
+        self.on_callsign()                  # enregistre avec la station
 
     def _upper(self, field, text):
         position = field.cursorPosition()
@@ -2246,10 +2456,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.civ:
             self.civ.set_atu(on)
 
-    def on_monitor(self, on):
-        if self.civ:
-            self.civ.set_monitor(on)
-
     def on_power_button(self):
         on = not self.radio_on      # l'état lu sur la radio, pas celui du bouton
         self.on_powered(self.radio_on)
@@ -2267,6 +2473,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_powered(self, on):
         self.radio_on = on
+        self.vu_meter.setLit(on)
         self.power_button.setChecked(on)
         self.power_button.setText("⏻ ON" if on else "⏻ OFF")
         self.power_button.setStyleSheet(
