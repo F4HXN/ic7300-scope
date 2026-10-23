@@ -72,8 +72,11 @@ ni interface externe ni logiciel de pilotage à installer.
 | Mode | Principe |
 |---|---|
 | **CW** | Démodulation à la note, seuil adaptatif, vitesse suivie automatiquement |
+| **RTTY 45** | 45,45 bauds, écart 170 Hz, Baudot ITA2 |
+| **RTTY 50 météo** | 50 bauds, écart 450 Hz : bulletins de la météo allemande (DWD) |
 | **FT8 / FT4** | Créneaux calés sur l'heure UTC, décodage par `jt9` (moteur de WSJT-X) |
 | **SSTV** | Réception et émission : Martin, Scottie, Robot, PD |
+| **Fax météo** | Cartes WEFAX 120 lignes/min, IOC 576 (DWD Pinneberg…), calage et pente automatiques |
 
 ### 📡 Émission
 
@@ -226,8 +229,10 @@ python3 scanner_vhf_uhf.py
 |---|---|
 | `ic7300_scope.py` | Fenêtre principale, CI-V, son, spectre, waterfall, émission |
 | `cw_decoder.py` | Décodeur CW |
+| `rtty_decoder.py` | Décodeur RTTY |
 | `ft8_decoder.py` | FT8 / FT4 via `jt9` |
 | `sstv.py` · `sstv_window.py` | SSTV : codage, décodage et fenêtre |
+| `wefax.py` | Fax météo : réception des cartes |
 | `cat_server.py` | Serveur CI-V réseau pour `--remote` |
 | `scanner_vhf_uhf.py` | Scanner VHF/UHF piloté par Gqrx |
 | `install.sh` · `install-serveur.sh` | Entrées du menu des applications |

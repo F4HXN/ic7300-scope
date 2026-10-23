@@ -24,8 +24,9 @@ import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
 from cw_pioche import hand_timing
+from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
-from sstv_window import SstvWindow
+from sstv_window import SstvWindow, bring_to_front
 
 DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
 RADIO_SINK = "alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
@@ -86,6 +87,7 @@ CW_MACROS = [
     ("Fin", "Réponse à la fin du correspondant",
      "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} ^SK"),
 ]
+RTTY_DECODERS = ("rtty", "rtty50")
 # abréviations de fin de message : texte, sens
 CW_ENDINGS = [
     ("K", "À vous (invitation à émettre)"),
@@ -374,7 +376,10 @@ class AudioReader(QtCore.QThread):
         self.source = source
         self.proc = None
         self._running = True
-        self.decoders = {"cw": CwDecoder(RATE), "ft8": Ft8Decoder(RATE),
+        self.decoders = {"cw": CwDecoder(RATE), "rtty": RttyDecoder(RATE),
+                         "rtty50": RttyDecoder(RATE, baud=50, shift=450,
+                                               inverted=True),
+                         "ft8": Ft8Decoder(RATE),
                          "ft4": Ft4Decoder(RATE)}
         self.decoder = None             # décodeur choisi, ou None
         self.sstv = None                # décodeur SSTV quand sa fenêtre est ouverte
@@ -1288,6 +1293,58 @@ class VuMeter(QtWidgets.QWidget):
         p.drawRoundedRect(QtCore.QRectF(5, 5, w - 10, h * 0.45), 4, 4)
 
 
+class DecodedTextWindow(QtWidgets.QWidget):
+    """Le texte décodé en grand, dans une fenêtre à part (F11 : plein écran).
+
+    Elle recopie le texte de la fenêtre principale à chaque changement : ce qui
+    arrive, Effacer et le changement de décodeur s'y voient aussitôt."""
+
+    def __init__(self, document, decoder_combo, parent):
+        # fenêtre fille : elle reste devant la fenêtre principale
+        super().__init__(parent, QtCore.Qt.Window)
+        self.setWindowTitle("Décodeur — IC-7300 Scope")
+        self.resize(1000, 600)
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.title = QtWidgets.QLabel()
+        self.title.setStyleSheet("font: bold 13pt;")
+        self.text = QtWidgets.QPlainTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setMaximumBlockCount(500)
+        self.source = document
+        self.text.setStyleSheet("font: bold 14pt monospace; color: #3ddc84;")
+        layout.addWidget(self.title)
+        layout.addWidget(self.text, stretch=1)
+        self.combo = decoder_combo
+        self.combo.currentIndexChanged.connect(self._show_title)
+        self._show_title()
+        document.contentsChanged.connect(self._copy)
+        self._copy()
+
+    def _show_title(self, *_):
+        self.title.setText(f"Décodeur : {self.combo.currentText()}   (F11 : plein écran)")
+
+    def _copy(self):
+        """Recopie le texte ; reste en bas, sauf si on est remonté lire plus haut."""
+        bar = self.text.verticalScrollBar()
+        at_end = bar.value() >= bar.maximum() - 40 or not self.isVisible()
+        position = bar.value()
+        self.text.setPlainText(self.source.toPlainText())
+        if at_end:
+            self.text.moveCursor(QtGui.QTextCursor.End)
+            self.text.ensureCursorVisible()
+        else:
+            bar.setValue(position)
+
+    def keyPressEvent(self, event):
+        if event.key() == QtCore.Qt.Key_F11:
+            self.showNormal() if self.isFullScreen() else self.showFullScreen()
+        elif event.key() == QtCore.Qt.Key_Escape and self.isFullScreen():
+            self.showNormal()
+        else:
+            super().keyPressEvent(event)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, args):
         super().__init__()
@@ -1658,15 +1715,21 @@ class MainWindow(QtWidgets.QMainWindow):
         enlarge_slider_labels(volumes)
         layout.addLayout(volumes)
 
-        # Décodeurs CW, FT8 et FT4
+        # Décodeurs CW, RTTY, FT8 et FT4
         decoder_row = QtWidgets.QHBoxLayout()
         self.decoder_combo = QtWidgets.QComboBox()
         self.decoder_combo.addItem("Aucun", None)
         self.decoder_combo.addItem("CW", "cw")
+        self.decoder_combo.addItem("RTTY 45", "rtty")
+        self.decoder_combo.addItem("RTTY 50 météo", "rtty50")
         self.decoder_combo.addItem("FT8", "ft8")
         self.decoder_combo.addItem("FT4", "ft4")
         self.decoder_auto = QtWidgets.QCheckBox("Calage auto")
         self.decoder_auto.setChecked(True)
+        self.rtty_invert = QtWidgets.QCheckBox("Inverser")
+        self.rtty_invert.setToolTip("Mark sur la tonalité haute. À essayer si "
+                                    "le texte reste incohérent.")
+        self.rtty_invert.toggled.connect(self.on_rtty_invert)
         self.decoder_led = QtWidgets.QLabel("●")
         self.decoder_info = QtWidgets.QLabel("")
         self.decoder_info.setStyleSheet("font: 11pt monospace;")
@@ -1674,11 +1737,18 @@ class MainWindow(QtWidgets.QMainWindow):
         decoder_row.addWidget(QtWidgets.QLabel("Décodeur"))
         decoder_row.addWidget(self.decoder_combo)
         decoder_row.addWidget(self.decoder_auto)
+        decoder_row.addWidget(self.rtty_invert)
         decoder_row.addWidget(self.decoder_led)
         decoder_row.addWidget(self.decoder_info)
         self.decoder_led.setMinimumWidth(16)
         decoder_row.addStretch()
         decoder_row.addWidget(decoder_clear)
+        text_window_button = QtWidgets.QPushButton("Grande fenêtre")
+        text_window_button.setToolTip("Le texte décodé (CW, RTTY, FT8…) dans une "
+                                      "fenêtre à part, en grand (F11 : plein écran)")
+        text_window_button.clicked.connect(self.open_text_window)
+        self.text_window = None
+        decoder_row.addWidget(text_window_button)
         sstv_button = QtWidgets.QPushButton("SSTV…")
         sstv_button.setToolTip("Réception et émission d'images SSTV, "
                                "dans une fenêtre à part")
@@ -2415,12 +2485,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_timer.start()
         self._set_ptt_button(True)
 
+    def open_text_window(self):
+        if self.text_window is None:
+            self.text_window = DecodedTextWindow(self.decoder_text.document(),
+                                                 self.decoder_combo, self)
+        bring_to_front(self.text_window)
+
     def open_sstv(self):
         if self.sstv_window is None:
             self.sstv_window = SstvWindow(self)
-        self.sstv_window.show()
-        self.sstv_window.raise_()
-        self.sstv_window.activateWindow()
+        bring_to_front(self.sstv_window)
 
     def transmit_file(self, path):
         """Émet un fichier (utilisé par la fenêtre SSTV)."""
@@ -2718,8 +2792,23 @@ class MainWindow(QtWidgets.QMainWindow):
             if decoder:
                 self._set_decoder_pitch(x)
             return
+        # vue RF : en RTTY, un clic dans la bande écoutée choisit le signal
+        audio = self._audio_offset(x * 1000)
+        if decoder in RTTY_DECODERS and audio is not None:
+            self._set_decoder_pitch(audio)
+            return
         step = self.step_combo.currentData()
         self.tune_to(round(x * 1000 / step) * step)
+
+    def _audio_offset(self, rf_hz):
+        """Fréquence audio d'un signal RF, s'il tombe dans la bande en BLU."""
+        if self.freq_hz is None:
+            return None
+        mode = base_mode(self.mode_combo.currentText())
+        audio = {"USB": rf_hz - self.freq_hz, "LSB": self.freq_hz - rf_hz}.get(mode)
+        if audio is not None and 100 <= audio <= 3000:
+            return audio
+        return None
 
     def _set_decoder_pitch(self, hz):
         decoder = self.audio.decoder
@@ -2740,8 +2829,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_auto.setToolTip({
             "cw": "Cherche la note CW la plus forte entre 300 et 1200 Hz. "
                   "Clic sur le spectre audio pour la choisir.",
+            "rtty": "Se recale sur la paire de tonalités à ± 60 Hz du clic. "
+                    "Cliquer entre les deux traces.",
+            "rtty50": "Météo DWD (50 bauds, écart 450 Hz). Se recale sur la "
+                      "paire de tonalités à ± 150 Hz du clic. Cliquer entre "
+                      "les deux traces.",
         }.get(name, ""))
-        self.decoder_auto.setVisible(name == "cw")
+        self.rtty_invert.setVisible(name in RTTY_DECODERS)
+        if name in RTTY_DECODERS:
+            self.rtty_invert.setChecked(decoder.inverted)
+        self.decoder_auto.setVisible(name in ("cw", *RTTY_DECODERS))
         # FT8/FT4 : plusieurs lignes par créneau, il faut de la place
         self.decoder_text.setFixedHeight(150 if name in ("ft8", "ft4") else 70)
         if name == "ft4" and self.decoder_text.document().isEmpty():
@@ -2761,6 +2858,10 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._move_pitch_lines(decoder.pitch)
         self._show_pitch_lines()
+
+    def on_rtty_invert(self, inverted):
+        if self.decoder_combo.currentData() in RTTY_DECODERS:
+            self.audio.decoder.inverted = inverted
 
     def on_decoder_auto(self, auto):
         if self.audio.decoder:
@@ -2848,6 +2949,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_tx()
         if self.sstv_window:
             self.sstv_window.close()
+        if self.text_window:
+            self.text_window.close()
         self.audio.stop()
         if self.civ:
             self.civ.stop()
