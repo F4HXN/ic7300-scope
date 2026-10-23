@@ -26,8 +26,10 @@
 | 22 | 23/10/2026 | `b9fcf3f` | Sélecteur de la sortie son du PC pour l'écoute |
 | 23 | 23/10/2026 | `fd52424` | CW : liste des abréviations de fin de message (K, KN, AR, SK, 73…) |
 | 24 | 23/10/2026 | `12293c5` | RTTY de retour (et RTTY 50 météo), fax météo, fréquences SSTV et fax, couleur du texte SSTV, grandes fenêtres |
+| 25 | 23/10/2026 | `d200433` | Mémoires du PC et des 99 canaux de la radio (lecture, envoi, modification, effacement), 4 lignes de texte SSTV, écoute PC non muette au démarrage |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
 - le **RTTY** (n° 3), retiré au n° 19 puis remis au n° 24 ;
-- le **bouton MONI** (n° 6), retiré au n° 18.
+- le **bouton MONI** (n° 6), retiré au n° 18 ;
+- l'**impression** (menu Fichier), ajoutée puis annulée avant le n° 25.
