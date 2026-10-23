@@ -31,6 +31,8 @@ dans une seule fenêtre.
 
 ## Aperçu
 
+![IC-7300 Scope en trafic FT8 sur 20 m](docs/capture-ft8.webp)
+
 IC-7300 Scope se branche sur l'IC-7300 par **un seul câble USB**, qui porte à
 la fois la commande **CI-V** et la **carte son** intégrée à la radio. Il n'y a
 ni interface externe ni logiciel de pilotage à installer.
