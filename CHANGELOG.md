@@ -27,9 +27,12 @@
 | 23 | 23/10/2026 | `fd52424` | CW : liste des abréviations de fin de message (K, KN, AR, SK, 73…) |
 | 24 | 23/10/2026 | `12293c5` | RTTY de retour (et RTTY 50 météo), fax météo, fréquences SSTV et fax, couleur du texte SSTV, grandes fenêtres |
 | 25 | 23/10/2026 | `d200433` | Mémoires du PC et des 99 canaux de la radio (lecture, envoi, modification, effacement), 4 lignes de texte SSTV, écoute PC non muette au démarrage |
+| 26 | 23/10/2026 | `f8ab8c5` | Réglage de la fréquence à la souris (waterfall, scope) plus réactif |
+| 27 | 23/10/2026 | `9105c3e` | Vu-mètre retiré, bouton SSTV sous Mémoires |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
 - le **RTTY** (n° 3), retiré au n° 19 puis remis au n° 24 ;
 - le **bouton MONI** (n° 6), retiré au n° 18 ;
+- le **vu-mètre** (n° 18), retiré au n° 27 ;
 - l'**impression** (menu Fichier), ajoutée puis annulée avant le n° 25.
