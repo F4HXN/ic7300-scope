@@ -10,7 +10,7 @@ dans une seule fenêtre.
 ![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
 ![PyQt5](https://img.shields.io/badge/PyQt5-pyqtgraph-41CD52?logo=qt&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-PipeWire%20%2F%20PulseAudio-FCC624?logo=linux&logoColor=black)
-![Indicatif](https://img.shields.io/badge/de-F4HXN-c62828)
+![Indicatif](https://img.shields.io/badge/Indicatif-F4HXN-c62828)
 
 </div>
 
