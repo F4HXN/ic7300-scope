@@ -22,6 +22,8 @@
 | 18 | 23/10/2026 | `98a2a15` | CW à la pioche, vu-mètre, champ Aller à agrandi, bouton MONI retiré |
 | 19 | 23/10/2026 | `ca3b573` | Décodeurs PSK31 et RTTY supprimés |
 | 20 | 23/10/2026 | `65e827b` | README : capture d'écran en trafic FT8 |
+| 21 | 23/10/2026 | `1b03031` | Historique des modifications (ce fichier) |
+| 22 | 23/10/2026 | `b9fcf3f` | Sélecteur de la sortie son du PC pour l'écoute |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10) et le **RTTY** (n° 3), retirés au n° 19 ;
