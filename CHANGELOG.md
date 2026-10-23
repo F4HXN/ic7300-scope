@@ -24,6 +24,7 @@
 | 20 | 23/10/2026 | `65e827b` | README : capture d'écran en trafic FT8 |
 | 21 | 23/10/2026 | `1b03031` | Historique des modifications (ce fichier) |
 | 22 | 23/10/2026 | `b9fcf3f` | Sélecteur de la sortie son du PC pour l'écoute |
+| 23 | 23/10/2026 | `fd52424` | CW : liste des abréviations de fin de message (K, KN, AR, SK, 73…) |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10) et le **RTTY** (n° 3), retirés au n° 19 ;
