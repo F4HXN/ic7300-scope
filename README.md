@@ -24,7 +24,6 @@ dans une seule fenêtre.
 - [Utilisation](#utilisation)
 - [Trafic en CW](#trafic-en-cw)
 - [Piloter la radio depuis un autre PC](#piloter-la-radio-depuis-un-autre-pc)
-- [Scanner VHF/UHF](#scanner-vhfuhf)
 - [Organisation du code](#organisation-du-code)
 - [Historique des modifications](CHANGELOG.md)
 
@@ -201,34 +200,6 @@ python3 ic7300_scope.py --remote <IP-du-PC-de-la-radio>
 
 ---
 
-## Scanner VHF/UHF
-
-`scanner_vhf_uhf.py` balaie les bandes amateur **2 m, 70 cm et 6 m** avec une
-clé **RTL-SDR**, en pilotant [Gqrx](https://gqrx.dk) par son contrôle à
-distance.
-
-| | |
-|---|---|
-| **Bandes prêtes** | Relais et FM simplex 2 m / 70 cm, bandes entières, 6 m FM (plan IARU Région 1) |
-| **Arrêt automatique** | Le seuil suit le **bruit de fond**, mesuré à chaque balayage |
-| **Squelch** | Celui de Gqrx suit le seuil : on n'entend que les canaux actifs |
-| **Attente** | Reste quelques secondes après une émission, le temps de la réponse |
-| **Historique** | Fréquence, heure, nombre de passages et niveau maximum |
-| **Passer / Ignorer** | Sauter un canal, ou l'écarter pour de bon (porteuse, parasite) |
-| **Double-clic** | Sur le graphique ou l'historique : écoute de cette fréquence |
-
-**Mise en route :**
-
-1. Brancher la clé RTL-SDR et lancer **Gqrx**
-2. Démarrer la réception (▶) et activer **Remote control** dans la barre d'outils
-3. Lancer le scanner :
-
-```bash
-python3 scanner_vhf_uhf.py
-```
-
----
-
 ## Organisation du code
 
 | Fichier | Rôle |
@@ -242,7 +213,6 @@ python3 scanner_vhf_uhf.py
 | `memory_window.py` | Fenêtre des mémoires (PC et radio) |
 | `cat_server.py` | Serveur CI-V réseau pour `--remote` |
 | `serveur_gui.py` | Fenêtre IC-7300 Serveur : marche/arrêt et commandes transmises |
-| `scanner_vhf_uhf.py` | Scanner VHF/UHF piloté par Gqrx |
 | `install.sh` · `install-serveur.sh` | Entrées du menu des applications |
 | `reseau/` | Service systemd et partage du son en réseau |
 
