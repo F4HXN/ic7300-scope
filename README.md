@@ -182,7 +182,10 @@ y était branché.
 ```
 
 Ce script installe le service `ic7300-cat-server` et ajoute **IC-7300 Serveur**
-au menu, pour le démarrer ou l'arrêter d'un clic.
+au menu. Sa fenêtre montre si le serveur tourne, le démarre ou l'arrête d'un
+clic, indique le PC distant connecté et liste en direct les **commandes
+transmises** à la radio (fréquence, mode, PTT, texte CW…), avec leur trame
+CI-V. Les interrogations automatiques (S-mètre, scope…) sont masquées par défaut.
 
 **Sur le PC distant :**
 
@@ -236,6 +239,7 @@ python3 scanner_vhf_uhf.py
 | `wefax.py` | Fax météo : réception des cartes |
 | `memory_window.py` | Fenêtre des mémoires (PC et radio) |
 | `cat_server.py` | Serveur CI-V réseau pour `--remote` |
+| `serveur_gui.py` | Fenêtre IC-7300 Serveur : marche/arrêt et commandes transmises |
 | `scanner_vhf_uhf.py` | Scanner VHF/UHF piloté par Gqrx |
 | `install.sh` · `install-serveur.sh` | Entrées du menu des applications |
 | `reseau/` | Service systemd et partage du son en réseau |
