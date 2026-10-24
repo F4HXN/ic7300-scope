@@ -34,6 +34,8 @@
 | 30 | 24/10/2026 | `e4ed835` | Fenêtre IC-7300 Serveur : plus de gel quand on affiche les interrogations automatiques |
 | 31 | 24/10/2026 | `a0748f3` | Guide d'installation sur Ubuntu : [INSTALLATION.md](INSTALLATION.md) |
 | 32 | 24/10/2026 | `181c46c` | README : `git clone` depuis le Gitea local |
+| 33 | 24/10/2026 | `6b2e7c4` | Loupe du bouton QRZ dessinée (l'emoji restait vide sous Ubuntu 26.04) |
+| 34 | 24/10/2026 | `472df4a` | Port de la radio et réseaux locaux trouvés tout seuls, doc sans adresses IP propres à la station |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
