@@ -7,6 +7,9 @@ Les deux tonalités (mark et space) sont ramenées en bande de base, filtrées,
 et la différence de leurs amplitudes donne le bit. Chaque caractère est un
 bit de départ (space), 5 bits de données (poids faible d'abord) et un arrêt
 (mark) : on lit chaque bit en son milieu à partir du front de départ.
+
+À l'émission, afsk() fait l'inverse : le texte en Baudot, puis les deux
+tonalités en audio (AFSK), à émettre en BLU sur l'entrée USB de la radio.
 """
 import numpy as np
 
@@ -24,6 +27,9 @@ FIGURES = ["", "3", "\n", "-", " ", "'", "8", "7", "", "$", "4", "", ",",
            "!", ":", "(", "5", "+", ")", "2", "#", "6", "0", "1", "9", "?",
            "&", None, ".", "/", "=", None]
 FIGS, LTRS = 0x1B, 0x1F
+CR, LF = 0x08, 0x02
+STOP_BITS = 1.5
+LEAD_IN = 0.4                   # s de mark avant le texte, pour caler l'autre
 
 
 class RttyDecoder:
@@ -71,7 +77,7 @@ class RttyDecoder:
         self._start = None
         self._bits = []
 
-    def _tones(self):
+    def tones(self):
         """Fréquences audio (mark, space)."""
         low, high = self.pitch - self.shift / 2, self.pitch + self.shift / 2
         return (high, low) if self.inverted else (low, high)
@@ -92,7 +98,7 @@ class RttyDecoder:
             best = centres[int(np.argmax(score))]
             if min(level(best - self.shift / 2), level(best + self.shift / 2)) > floor + MIN_SNR_DB:
                 self.pitch += 0.3 * (best - self.pitch)
-        self.snr = min(level(f) for f in self._tones()) - floor
+        self.snr = min(level(f) for f in self.tones()) - floor
 
     def feed(self, samples):
         """Ajoute des échantillons et renvoie le texte décodé entre-temps."""
@@ -102,7 +108,7 @@ class RttyDecoder:
         seg = buf[:count * self._stage]
         n = np.arange(len(seg))
         envelopes = []
-        for i, freq in enumerate(self._tones()):
+        for i, freq in enumerate(self.tones()):
             step = 2 * np.pi * freq / self.rate
             mixed = seg * np.exp(-1j * (self._phases[i] + step * n))
             self._phases[i] = (self._phases[i] + step * len(seg)) % (2 * np.pi)
@@ -149,3 +155,46 @@ class RttyDecoder:
         if char == " ":
             self._figures = False       # retour en lettres après une espace
         return char
+
+
+def baudot(text):
+    """Texte → [(code ITA2, caractère affiché)], encadré de retours à la ligne.
+
+    Les caractères sans code Baudot sont omis. Le décodeur d'en face repasse en
+    lettres après une espace (USOS) : on renvoie FIGS avant le chiffre suivant."""
+    out = [(LTRS, ""), (CR, ""), (LF, "")]
+    figures = False
+    for char in text.upper():
+        if char in LETTERS:
+            if figures:
+                out.append((LTRS, ""))
+                figures = False
+            out.append((LETTERS.index(char), char))
+        elif char in FIGURES:
+            if not figures:
+                out.append((FIGS, ""))
+                figures = True
+            out.append((FIGURES.index(char), char))
+        if char == " ":
+            figures = False
+    return out + [(CR, ""), (LF, ""), (LTRS, "")]
+
+
+def afsk(text, rate, mark, space, baud=BAUD):
+    """Le texte en audio RTTY : (échantillons, [(instant, caractère)], durée).
+
+    Chaque caractère : départ (space), 5 bits poids faible d'abord, arrêt
+    (mark, 1,5 bit). La phase est continue d'une tonalité à l'autre."""
+    bit = rate / baud
+    freqs, schedule = [mark] * round(LEAD_IN * rate), []
+    for code, char in baudot(text):
+        if char:
+            schedule.append((len(freqs) / rate, char))
+        start = len(freqs)
+        bits = [0] + [(code >> i) & 1 for i in range(5)]
+        for i, b in enumerate(bits):
+            freqs += [mark if b else space] * (round(start + (i + 1) * bit) - len(freqs))
+        freqs += [mark] * (round(start + (6 + STOP_BITS) * bit) - len(freqs))
+    freqs += [mark] * round(0.2 * rate)
+    phase = 2 * np.pi * np.cumsum(np.array(freqs)) / rate
+    return (0.5 * np.sin(phase)).astype(np.float32), schedule, len(freqs) / rate

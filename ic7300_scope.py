@@ -29,7 +29,7 @@ from cw_decoder import CwDecoder
 from cw_pioche import char_schedule, hand_timing
 import carnet
 from qrz import Qrz, QrzError, cw_name
-from rtty_decoder import RttyDecoder
+from rtty_decoder import RttyDecoder, afsk
 from ft8_decoder import Ft4Decoder, Ft8Decoder
 from cat_server import radio_port
 from memory_window import MemoryWindow
@@ -71,7 +71,13 @@ BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
 # indicatif et station de l'opérateur, pour les messages CW tout faits
 CALLSIGN_FILE = os.path.join(os.path.dirname(STATE_FILE), "indicatif.json")
 LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "carnet.adi")
-MACROS_FILE = os.path.join(os.path.dirname(STATE_FILE), "messages-cw.json")
+# message RTTY mis en audio avant d'être émis
+RTTY_TX_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME")
+                            or os.path.expanduser("~/.cache"),
+                            "ic7300-scope", "rtty-emis.wav")
+# messages pré-enregistrés de chaque mode : fichier, d'origine plus bas
+MACROS_FILES = {kind: os.path.join(os.path.dirname(STATE_FILE), f"messages-{kind}.json")
+                for kind in ("cw", "rtty")}
 MEMORY_DUMP_FILE = os.path.join(os.path.dirname(STATE_FILE), "memoires-radio-brut.txt")
 # champs de « Ma station… » : clé, libellé, valeur de départ
 STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
@@ -109,7 +115,22 @@ CW_MACROS = [
     ("Fin", "Réponse à la fin du correspondant",
      "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} ^SK"),
 ]
-# champs utilisables dans les messages CW : {clé}, libellé
+# messages RTTY : pas de signes liés, l'indicatif répété trois fois (QRM)
+RTTY_MACROS = [
+    ("CQ", "Appel général", "CQ CQ CQ DE {call} {call} {call} PSE K"),
+    ("QRZ?", "Qui m'appelle ? (indicatif mal reçu)", "QRZ? DE {call} K"),
+    ("Répondre", "Répondre à un CQ", "{dest} DE {call} {call} {call} K"),
+    ("Rapport", "Premier passage : RST, prénom, QTH, locator",
+     "{dest} DE {call} {gm} OM TNX FER CALL UR RST 599 599 "
+     "NAME {name} {name} QTH {qth} {qth} LOC {loc} {loc} HW? {dest} DE {call} K"),
+    ("Station 73", "Matériel, remerciements et fin du QSO",
+     "{dest} DE {call} FB {dname} RIG HERE {rig} PWR {pwr} W ANT {ant} "
+     "TNX FB QSO QSL VIA BUREAU OR EQSL 73 ES GD DX {dest} DE {call} SK"),
+    ("Fin", "Réponse à la fin du correspondant",
+     "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} SK"),
+]
+DEFAULT_MACROS = {"cw": CW_MACROS, "rtty": RTTY_MACROS}
+# champs utilisables dans les messages CW et RTTY : {clé}, libellé
 MACRO_FIELDS = [("call", "Mon indicatif"), ("dest", "Correspondant"),
                 ("dname", "Son prénom"), ("gm", "GM/GA/GE"), ("name", "Mon prénom"),
                 ("qth", "QTH"), ("loc", "Locator"), ("rig", "Transceiver"),
@@ -1925,7 +1946,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cw_echo_timer = QtCore.QTimer(self)
         self.cw_echo_timer.setInterval(20)
         self.cw_echo_timer.timeout.connect(self.show_cw_echo)
-        cw_row.addWidget(QtWidgets.QLabel("CW"))
+        self.tx_text_label = QtWidgets.QLabel("CW")
+        cw_row.addWidget(self.tx_text_label)
         cw_row.addWidget(self.cw_text, stretch=1)
         cw_row.addWidget(self.cw_speed)
         cw_row.addWidget(self.cw_hand)
@@ -1992,17 +2014,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cw_macro_row = QtWidgets.QHBoxLayout()
         self.cw_macro_row.setContentsMargins(0, 0, 0, 0)
         macro_row.addLayout(self.cw_macro_row)
-        try:
-            with open(MACROS_FILE) as f:
-                self.cw_macros = [tuple(m) for m in json.load(f)]
-        except (OSError, ValueError, TypeError):
-            self.cw_macros = list(CW_MACROS)
+        # une série de messages par mode, celle du mode d'émission affichée
+        self.macro_sets = {}
+        for kind, path in MACROS_FILES.items():
+            try:
+                with open(path) as f:
+                    self.macro_sets[kind] = [tuple(m) for m in json.load(f)]
+            except (OSError, ValueError, TypeError):
+                self.macro_sets[kind] = list(DEFAULT_MACROS[kind])
+        self.macro_kind = "cw"
         self._build_cw_macros()
-        edit_macros = QtWidgets.QPushButton("✎")
-        edit_macros.setMaximumWidth(36)
-        edit_macros.setToolTip("Modifier les messages CW pré-enregistrés")
-        edit_macros.clicked.connect(self.on_edit_macros)
-        macro_row.addWidget(edit_macros)
+        self.edit_macros_button = QtWidgets.QPushButton("✎")
+        self.edit_macros_button.setMaximumWidth(36)
+        self.edit_macros_button.setToolTip("Modifier les messages CW pré-enregistrés")
+        self.edit_macros_button.clicked.connect(self.on_edit_macros)
+        macro_row.addWidget(self.edit_macros_button)
         # abréviation de fin : remplace celle qui termine déjà le message
         self.cw_ending = QtWidgets.QComboBox()
         self.cw_ending.addItem("Fin de message…", None)
@@ -2048,6 +2074,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sql_closed = False             # écoute coupée, squelch de la radio fermé
         self.radio_tx = False               # la radio émet (lu en CI-V)
         self.tx_player = None               # paplay du fichier
+        self.tx_once = None                 # fichier émis une fois (RTTY), sans
+                                            # changer l'entrée choisie
         self.tx_timer = QtCore.QTimer(self)
         self.tx_timer.setInterval(250)
         self.tx_timer.timeout.connect(self.check_tx)
@@ -2262,7 +2290,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_mode(self, name):
         self.mode_combo.setCurrentText(name)
-        self._cw_enable(self.civ is not None and name in ("CW", "CW-R"))
+        self._update_tx_text()
         self._filter_tooltips()
         self._update_markers()
 
@@ -2376,7 +2404,32 @@ class MainWindow(QtWidgets.QMainWindow):
         for widget in (self.cw_text, self.cw_send_button, self.cw_stop_button,
                        *self.cw_macro_buttons):
             widget.setEnabled(on)
-        self.cw_text.setToolTip("" if on else "Passer la radio en CW pour émettre")
+        self.cw_text.setToolTip("" if on else "Passer la radio en CW pour émettre, "
+                                "ou en LSB-D/USB-D avec le décodeur RTTY")
+
+    def _rtty_tx(self):
+        """Le texte part en RTTY : décodeur RTTY et radio en BLU (AFSK)."""
+        return (self.decoder_combo.currentData() in RTTY_DECODERS
+                and base_mode(self.mode_combo.currentText()) in ("LSB", "USB"))
+
+    def _update_tx_text(self):
+        """Ligne d'émission en CW (manipulateur de la radio) ou en RTTY."""
+        rtty = self._rtty_tx()
+        cw = self.mode_combo.currentText() in ("CW", "CW-R")
+        self._cw_enable(getattr(self, "civ", None) is not None and (cw or rtty))
+        self.tx_text_label.setText("RTTY" if rtty else "CW")
+        self.cw_text.setPlaceholderText(
+            "Texte à émettre en RTTY sur les tonalités du décodeur, Entrée pour envoyer"
+            if rtty else "Texte à émettre en CW, Entrée pour envoyer "
+            "(^AR, ^SK… pour les signes liés)")
+        self.cw_speed.setVisible(not rtty)
+        self.cw_hand.setVisible(not rtty)
+        kind = "rtty" if rtty else "cw"
+        if kind != self.macro_kind:
+            self.macro_kind = kind
+            self._build_cw_macros()
+            self.edit_macros_button.setToolTip(
+                f"Modifier les messages {kind.upper()} pré-enregistrés")
 
     def on_key_speed(self, raw):
         self.cw_speed.setEnabled(True)
@@ -2390,6 +2443,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.set_key_speed(round((wpm - 6) * 255 / 42))
 
     def on_cw_send(self):
+        if self._rtty_tx():
+            self.send_rtty(self.cw_text.text())
+            return
         # caractères que la radio sait émettre ; ^ lie deux lettres (^AR)
         text = "".join(c for c in self.cw_text.text().upper()
                        if c.isascii() and (c.isalnum() or c in " /?.-,:'()=+\"@^"))
@@ -2409,6 +2465,42 @@ class MainWindow(QtWidgets.QMainWindow):
         for i, (t, chunk) in enumerate(schedule):
             self.cw_echo.append((start + t, chunk, i == 0))
         self.cw_echo_end = start + length + 7 * 1.2 / self.cw_speed.value()
+        self.cw_echo_timer.start()
+
+    def send_rtty(self, text):
+        """Message mis en audio RTTY (mark et space du décodeur), émis en mode data."""
+        text = " ".join(text.upper().replace("^", "").split())
+        decoder = self.audio.decoder
+        if not text or not self.civ or decoder is None:
+            return
+        if self.tx_active:
+            self.statusBar().showMessage("RTTY : attendre la fin de l'émission en cours")
+            return
+        mark, space = decoder.tones()
+        samples, schedule, length = afsk(text, RATE, mark, space, decoder.baud)
+        try:
+            os.makedirs(os.path.dirname(RTTY_TX_FILE), exist_ok=True)
+            with wave.open(RTTY_TX_FILE, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(RATE)
+                w.writeframes((samples * 32767).astype(np.int16).tobytes())
+        except OSError as e:
+            self.statusBar().showMessage(f"RTTY impossible : {e}")
+            return
+        self.cw_text.clear()
+        self.tx_once = RTTY_TX_FILE
+        self.tx_digital = True
+        self.ptt_button.setChecked(True)
+        if not self.tx_active:
+            return
+        self.statusBar().showMessage(
+            f"RTTY : {text}  (mark {mark:.0f} Hz, space {space:.0f} Hz, {length:.0f} s)")
+        # le son part 400 ms après le PTT (start_tx)
+        start = time.monotonic() + 0.4 + CW_ECHO_DELAY
+        for i, (t, char) in enumerate(schedule):
+            self.cw_echo.append((start + t, char, i == 0))
+        self.cw_echo_end = start + length
         self.cw_echo_timer.start()
 
     def show_cw_echo(self):
@@ -2564,25 +2656,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.cw_macro_row.removeWidget(button)
                 button.deleteLater()
         self.cw_macro_buttons = [b for b in self.cw_macro_buttons if b is self.cw_ending]
-        for i, (name, tip, text) in enumerate(self.cw_macros):
+        label = self.macro_kind.upper()
+        for i, (name, tip, text) in enumerate(self.macro_sets[self.macro_kind]):
             button = QtWidgets.QPushButton(name)
-            button.setToolTip(f"{tip} :\n{text}\nMis dans le champ CW, Entrée pour envoyer")
+            button.setToolTip(f"{tip} :\n{text}\nMis dans le champ {label}, Entrée pour envoyer")
             button.clicked.connect(lambda _, text=text: self.on_cw_macro(text))
             button.setEnabled(enabled)
             self.cw_macro_row.insertWidget(i, button)
             self.cw_macro_buttons.insert(i, button)
 
     def on_edit_macros(self):
-        dialog = CwMacroDialog(self.cw_macros, self.macro_values, self)
+        kind = self.macro_kind
+        dialog = CwMacroDialog(self.macro_sets[kind], self.macro_values, self, kind)
         if dialog.exec_() != QtWidgets.QDialog.Accepted:
             return
-        self.cw_macros = dialog.macros()
+        self.macro_sets[kind] = dialog.macros()
         try:
-            os.makedirs(os.path.dirname(MACROS_FILE), exist_ok=True)
-            with open(MACROS_FILE, "w") as f:
-                json.dump(self.cw_macros, f, ensure_ascii=False, indent=1)
+            os.makedirs(os.path.dirname(MACROS_FILES[kind]), exist_ok=True)
+            with open(MACROS_FILES[kind], "w") as f:
+                json.dump(self.macro_sets[kind], f, ensure_ascii=False, indent=1)
         except OSError as e:
-            self.statusBar().showMessage(f"Messages CW non enregistrés : {e}")
+            self.statusBar().showMessage(f"Messages {kind.upper()} non enregistrés : {e}")
         self._build_cw_macros()
 
     def macro_values(self):
@@ -2735,7 +2829,9 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QUrl(f"https://www.qrz.com/db/{QtCore.QUrl.toPercentEncoding(call).data().decode()}"))
 
     def on_cw_stop(self):
-        if self.civ:
+        if self.tx_once and self.tx_active:
+            self.stop_tx("RTTY arrêté")
+        elif self.civ:
             self.civ.stop_cw()
         if self.cw_echo_timer.isActive():
             self.cw_echo_end = 0.0
@@ -2783,15 +2879,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_tx()
 
     def start_tx(self):
-        source = self.tx_source.currentData()
+        source = "file" if self.tx_once else self.tx_source.currentData()
+        self.tx_playing = self.tx_once or self.tx_file
         problem = None
         if not self.civ:
             problem = "Émission impossible sans CAT"
-        elif source == "file" and not self.tx_file:
+        elif source == "file" and not self.tx_playing:
             problem = "Choisis d'abord un fichier à émettre"
         if problem:
             self.statusBar().showMessage(problem)
             self._set_ptt_button(False)
+            self.tx_once = None
             return
         self.civ.set_ptt(True, data=self.tx_digital)
         if source == "file":
@@ -2807,7 +2905,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_limit = TX_TIMEOUT
         if source == "file":
             try:
-                with wave.open(self.tx_file) as w:
+                with wave.open(self.tx_playing) as w:
                     length = w.getnframes() / w.getframerate()
                 self.tx_limit = max(TX_TIMEOUT, length + 15)
             except (OSError, wave.Error, EOFError):
@@ -2887,7 +2985,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _play_tx_file(self):
         if self.tx_active:
             self.tx_player = subprocess.Popen(
-                ["paplay", f"--device={self.radio_sink}", self.tx_file])
+                ["paplay", f"--device={self.radio_sink}", self.tx_playing])
 
     def stop_tx(self, reason=None):
         if self.tx_player:
@@ -2901,6 +2999,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.set_ptt(False)
         self.tx_active = False
         self.tx_digital = False
+        self.tx_once = None
         if not self.radio_tx:
             self._mute_listen_for_tx(False)
         self.tx_timer.stop()
@@ -3220,6 +3319,7 @@ class MainWindow(QtWidgets.QMainWindow):
                       "paire de tonalités à ± 150 Hz du clic. Cliquer entre "
                       "les deux traces.",
         }.get(name, ""))
+        self._update_tx_text()
         self.rtty_invert.setVisible(name in RTTY_DECODERS)
         if name in RTTY_DECODERS:
             self.rtty_invert.setChecked(decoder.inverted)
@@ -3504,11 +3604,12 @@ class LogbookWindow(QtWidgets.QWidget):
 
 
 class CwMacroDialog(QtWidgets.QDialog):
-    """Messages CW pré-enregistrés : nom du bouton, description, texte."""
+    """Messages CW ou RTTY pré-enregistrés : nom du bouton, description, texte."""
 
-    def __init__(self, macros, values, parent):
+    def __init__(self, macros, values, parent, kind="cw"):
         super().__init__(parent)
-        self.setWindowTitle("Messages CW")
+        self.kind = kind
+        self.setWindowTitle(f"Messages {kind.upper()}")
         self.resize(900, 520)
         self.values = values            # fonction : valeurs pour l'aperçu
         self.items = [list(m) for m in macros]
@@ -3645,7 +3746,7 @@ class CwMacroDialog(QtWidgets.QDialog):
                     break
 
     def _reset(self):
-        self.items = [list(m) for m in CW_MACROS]
+        self.items = [list(m) for m in DEFAULT_MACROS[self.kind]]
         self._fill(0)
 
     def macros(self):
