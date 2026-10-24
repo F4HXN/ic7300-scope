@@ -32,6 +32,7 @@
 | 28 | 23/10/2026 | `bd58c2f` | Boutons Enreg., Dossier et ÉMETTRE (liseré rouge) sous SSTV, ligne Puissance sous Volume PC |
 | 29 | 24/10/2026 | `97bcdcc` | Fenêtre IC-7300 Serveur : marche/arrêt, PC connecté et commandes transmises en direct |
 | 30 | 24/10/2026 | `e4ed835` | Fenêtre IC-7300 Serveur : plus de gel quand on affiche les interrogations automatiques |
+| 31 | 24/10/2026 | `a0748f3` | Guide d'installation sur Ubuntu : [INSTALLATION.md](INSTALLATION.md) |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
