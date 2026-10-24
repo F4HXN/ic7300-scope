@@ -24,7 +24,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
-from cw_pioche import hand_timing
+from cw_pioche import char_schedule, hand_timing
 from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
 from cat_server import radio_port
@@ -173,6 +173,8 @@ DATA_MODES = ("LSB", "USB")     # proposés aussi en mode data (LSB-D, USB-D)
 MODE_NAMES = ["LSB", "LSB-D", "USB", "USB-D", "AM", "CW", "RTTY", "FM",
               "CW-R", "RTTY-R"]
 TX_TIMEOUT = 180                # s : l'émission est coupée au-delà
+TX_TEXT_COLOR = "#ef5350"       # texte émis en CW, parmi le texte décodé
+CW_ECHO_DELAY = 0.15            # s entre l'envoi CI-V et la première lettre manipulée
 SLIDER_WIDTH = 150              # px : curseurs de la grille du son
 SOUND_GAPS = (4, 8, 12, 16)     # colonnes vides entre les groupes de la grille
 SOUND_COLUMNS = 20              # colonne élastique, à droite de la grille
@@ -1320,7 +1322,9 @@ class DecodedTextWindow(QtWidgets.QWidget):
         bar = self.text.verticalScrollBar()
         at_end = bar.value() >= bar.maximum() - 40 or not self.isVisible()
         position = bar.value()
-        self.text.setPlainText(self.source.toPlainText())
+        # copie avec les couleurs (texte émis en rouge)
+        self.text.clear()
+        self.text.textCursor().insertFragment(QtGui.QTextDocumentFragment(self.source))
         if at_end:
             self.text.moveCursor(QtGui.QTextCursor.End)
             self.text.ensureCursorVisible()
@@ -1387,8 +1391,6 @@ class MainWindow(QtWidgets.QMainWindow):
             filters.addWidget(button)
         self.filter_buttons.idClicked.connect(self.on_filter_selected)
         self._filter_tooltips()
-        self.cursor_label = QtWidgets.QLabel("")
-        self.cursor_label.setStyleSheet("font: 12pt monospace;")
         top.addWidget(self.freq_label)
         top.addWidget(QtWidgets.QLabel("MHz"))
         top.addSpacing(10)
@@ -1401,8 +1403,27 @@ class MainWindow(QtWidgets.QMainWindow):
         goto_label.setStyleSheet("font-size: 14pt;")
         top.addWidget(goto_label)
         top.addWidget(self.freq_entry)
+        # horloge : UTC pour le trafic (FT8, carnet), puis heure locale, sur la
+        # ligne de base du reste
+        clock = QtWidgets.QHBoxLayout()
+        clock.setSpacing(6)
+        self.utc_label = QtWidgets.QLabel()
+        self.local_label = QtWidgets.QLabel()
+        for name, label, color, weight in (("UTC", self.utc_label, "#4fc3f7", "bold"),
+                                           ("Locale", self.local_label, "#b0bec5", "")):
+            title = QtWidgets.QLabel(name)
+            title.setStyleSheet(f"font-size: 14pt; color: {color};")
+            label.setStyleSheet(f"font: {weight} 15pt monospace; color: {color};")
+            if clock.count():
+                clock.addSpacing(18)
+            clock.addWidget(title)
+            clock.addWidget(label)
+        top.addSpacing(30)
+        top.addLayout(clock)
+        self.clock_timer = QtCore.QTimer(self)
+        self.clock_timer.timeout.connect(self.update_clock)
+        self.update_clock()
         top.addStretch()
-        top.addWidget(self.cursor_label)
         left = QtWidgets.QVBoxLayout()
         left.addLayout(top)
 
@@ -1587,6 +1608,12 @@ class MainWindow(QtWidgets.QMainWindow):
             line.setVisible(False)
             plot.addItem(line, ignoreBounds=True)
             self.pitch_lines.append(line)
+        # fréquence sous la souris, dans le coin haut droit du waterfall
+        self.cursor_text = pg.TextItem("", color="#ffffff", anchor=(1, 0),
+                                       fill=(16, 20, 24, 200))
+        self.cursor_text.setFont(QtGui.QFont("monospace", 12, QtGui.QFont.Bold))
+        self.cursor_text.setParentItem(self.wf_plot.vb)    # hors des coordonnées
+        self.wf_plot.vb.sigResized.connect(self._place_cursor_text)
         graphics.scene().sigMouseMoved.connect(self.on_mouse_moved)
         graphics.scene().sigMouseClicked.connect(self.on_mouse_clicked)
         # molette : change la fréquence ; glisser en vue RF : déplace la bande
@@ -1860,6 +1887,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cw_stop_button = QtWidgets.QPushButton("Stop")
         self.cw_stop_button.setToolTip("Arrête le message en cours")
         self.cw_stop_button.clicked.connect(self.on_cw_stop)
+        self.cw_echo = []           # lettres émises à écrire : (instant, texte, début)
+        self.cw_echo_end = 0.0      # fin prévue du dernier message
+        self.cw_echo_held = ""      # texte décodé pendant l'émission, écrit après
+        self.cw_echo_timer = QtCore.QTimer(self)
+        self.cw_echo_timer.setInterval(20)
+        self.cw_echo_timer.timeout.connect(self.show_cw_echo)
         cw_row.addWidget(QtWidgets.QLabel("CW"))
         cw_row.addWidget(self.cw_text, stretch=1)
         cw_row.addWidget(self.cw_speed)
@@ -2219,6 +2252,13 @@ class MainWindow(QtWidgets.QMainWindow):
             steps += 1                      # on s'aligne d'abord sur le pas
         self.tune_to(base + steps * step)
 
+    def update_clock(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        self.utc_label.setText(f"{now:%H:%M:%S}")
+        self.local_label.setText(f"{now.astimezone():%H:%M:%S}")
+        # prochain tic juste après le changement de seconde
+        self.clock_timer.start(1000 - now.microsecond // 1000 + 5)
+
     def on_freq_entered(self):
         hz = parse_frequency(self.freq_entry.text())
         if hz is None:
@@ -2304,6 +2344,40 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.send_cw(text)
         self.cw_text.clear()
         self.statusBar().showMessage(f"CW : {text}")
+        # le message émis s'écrit en rouge au rythme de la manipulation ; un
+        # message envoyé pendant le précédent part à sa suite
+        schedule, length = char_schedule(text, self.cw_speed.value())
+        start = max(time.monotonic() + CW_ECHO_DELAY, self.cw_echo_end)
+        for i, (t, chunk) in enumerate(schedule):
+            self.cw_echo.append((start + t, chunk, i == 0))
+        self.cw_echo_end = start + length + 7 * 1.2 / self.cw_speed.value()
+        self.cw_echo_timer.start()
+
+    def show_cw_echo(self):
+        """Écrit les lettres émises arrivées à échéance, en rouge sur leur ligne."""
+        now = time.monotonic()
+        cursor = self.decoder_text.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        sent = QtGui.QTextCharFormat()
+        sent.setForeground(QtGui.QColor(TX_TEXT_COLOR))
+        while self.cw_echo and self.cw_echo[0][0] <= now:
+            _, chunk, first = self.cw_echo.pop(0)
+            if first and not cursor.atBlockStart():
+                cursor.insertText("\n", QtGui.QTextCharFormat())
+            cursor.insertText(chunk, sent)
+        if not self.cw_echo and now >= self.cw_echo_end:
+            self._end_cw_echo(cursor)
+        self.decoder_text.setTextCursor(cursor)
+        self.decoder_text.ensureCursorVisible()
+
+    def _end_cw_echo(self, cursor):
+        """Fin du texte émis : le texte décodé reprend sur la ligne suivante."""
+        self.cw_echo_timer.stop()
+        self.cw_echo.clear()
+        if not cursor.atBlockStart():
+            cursor.insertText("\n", QtGui.QTextCharFormat())
+        held, self.cw_echo_held = self.cw_echo_held.lstrip(), ""
+        cursor.insertText(held, QtGui.QTextCharFormat())
 
     def on_cw_hand(self, on):
         self.station["pioche"] = on
@@ -2394,6 +2468,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_cw_stop(self):
         if self.civ:
             self.civ.stop_cw()
+        if self.cw_echo_timer.isActive():
+            self.cw_echo_end = 0.0
+            cursor = self.decoder_text.textCursor()
+            cursor.movePosition(QtGui.QTextCursor.End)
+            self._end_cw_echo(cursor)
+            self.decoder_text.setTextCursor(cursor)
 
     def on_usb_mod(self, raw):
         self.alc_slider.setEnabled(True)
@@ -2739,11 +2819,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if x is not None:
                 line.setPos(x)
         if x is None:
-            self.cursor_label.setText("")
-        elif self.view == "rf":
-            self.cursor_label.setText(format_frequency(round(x * 1000)))
+            self.cursor_text.setText("")
         else:
-            self.cursor_label.setText(f"{x:6.0f} Hz")
+            self.cursor_text.setText(format_frequency(round(x * 1000))
+                                     if self.view == "rf" else f"{x:.0f} Hz")
+        self.cursor_text.setVisible(x is not None)
+
+    def _place_cursor_text(self):
+        self.cursor_text.setPos(self.wf_plot.vb.width() - 6, 6)
 
     def _on_split(self, pos):
         """Vrai si la souris est sur la limite entre spectre et waterfall."""
@@ -2930,8 +3013,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_led.setStyleSheet(f"font: 16pt; color: {color};")
 
     def on_decoded(self, text):
-        self.decoder_text.moveCursor(QtGui.QTextCursor.End)
-        self.decoder_text.insertPlainText(text)
+        if self.cw_echo_timer.isActive():
+            self.cw_echo_held += text   # pas au milieu de la ligne émise
+            return
+        cursor = self.decoder_text.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.insertText(text, QtGui.QTextCharFormat())   # couleur du texte décodé
+        self.decoder_text.setTextCursor(cursor)
         self.decoder_text.ensureCursorVisible()
 
     def on_decoder_state(self, info, pitch, signal, active):
