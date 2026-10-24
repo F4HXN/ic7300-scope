@@ -36,6 +36,7 @@
 | 32 | 24/10/2026 | `181c46c` | README : `git clone` depuis le Gitea local |
 | 33 | 24/10/2026 | `6b2e7c4` | Loupe du bouton QRZ dessinée (l'emoji restait vide sous Ubuntu 26.04) |
 | 34 | 24/10/2026 | `472df4a` | Port de la radio et réseaux locaux trouvés tout seuls, doc sans adresses IP propres à la station |
+| 35 | 24/10/2026 | `ce6b2f7` | Scanner VHF/UHF retiré du projet (sans rapport avec l'IC-7300) |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
