@@ -10,6 +10,7 @@ import json
 import math
 import os
 import queue
+import re
 import signal
 import subprocess
 import sys
@@ -173,6 +174,10 @@ DATA_MODES = ("LSB", "USB")     # proposés aussi en mode data (LSB-D, USB-D)
 MODE_NAMES = ["LSB", "LSB-D", "USB", "USB-D", "AM", "CW", "RTTY", "FM",
               "CW-R", "RTTY-R"]
 TX_TIMEOUT = 180                # s : l'émission est coupée au-delà
+# indicatif : préfixe, chiffre, suffixe finissant par une lettre (F4HXN, 9A1AA,
+# 3DA0RU), avec /préfixe ou /suffixe éventuels (EA8/F4HXN, F5ABC/P)
+CALLSIGN_RE = re.compile(r"(?:[A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z]"
+                         r"(?:/[A-Z0-9]{1,4})?")
 TX_TEXT_COLOR = "#ef5350"       # texte émis en CW, parmi le texte décodé
 CW_ECHO_DELAY = 0.15            # s entre l'envoi CI-V et la première lettre manipulée
 SLIDER_WIDTH = 150              # px : curseurs de la grille du son
@@ -1306,6 +1311,7 @@ class DecodedTextWindow(QtWidgets.QWidget):
         self.text.setMaximumBlockCount(500)
         self.source = document
         self.text.setStyleSheet("font: bold 14pt monospace; color: #3ddc84;")
+        CallsignClick(self.text, parent.set_correspondent)
         layout.addWidget(self.title)
         layout.addWidget(self.text, stretch=1)
         self.combo = decoder_combo
@@ -1933,6 +1939,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dest_name = QtWidgets.QLineEdit()
         self.dest_name.setPlaceholderText("Son prénom")
         self.dest_name.setMaximumWidth(120)
+        CallsignClick(self.decoder_text, self.set_correspondent)
         for field in (self.dest_call, self.dest_name):
             field.setStyleSheet("font: 12pt monospace;")
             field.textEdited.connect(
@@ -2378,6 +2385,15 @@ class MainWindow(QtWidgets.QMainWindow):
             cursor.insertText("\n", QtGui.QTextCharFormat())
         held, self.cw_echo_held = self.cw_echo_held.lstrip(), ""
         cursor.insertText(held, QtGui.QTextCharFormat())
+
+    def set_correspondent(self, call):
+        """Indicatif pris dans le texte décodé (double-clic)."""
+        if call == self.callsign.text().strip().upper():
+            return                          # le sien
+        if call != self.dest_call.text().strip():
+            self.dest_name.clear()          # prénom d'un autre QSO
+        self.dest_call.setText(call)
+        self.statusBar().showMessage(f"Correspondant : {call}")
 
     def on_cw_hand(self, on):
         self.station["pioche"] = on
@@ -3080,6 +3096,36 @@ class MainWindow(QtWidgets.QMainWindow):
         # écoute rendue non muette, sinon PipeWire la garde coupée au lancement suivant
         self._pactl_stream("set-sink-input-mute", "0")
         super().closeEvent(event)
+
+
+def callsign_at(edit, pos):
+    """Indicatif sous le point pos d'une zone de texte, ou None."""
+    cursor = edit.cursorForPosition(pos)
+    line, i = cursor.block().text().upper(), cursor.positionInBlock()
+    start, end = i, i
+    while start > 0 and (line[start - 1].isalnum() or line[start - 1] == "/"):
+        start -= 1
+    while end < len(line) and (line[end].isalnum() or line[end] == "/"):
+        end += 1
+    word = line[start:end].strip("/")
+    return word if CALLSIGN_RE.fullmatch(word) else None
+
+
+class CallsignClick(QtCore.QObject):
+    """Double-clic sur un indicatif d'une zone de texte : callback(indicatif)."""
+
+    def __init__(self, edit, callback):
+        super().__init__(edit)
+        self.edit, self.callback = edit, callback
+        edit.viewport().installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.MouseButtonDblClick:
+            call = callsign_at(self.edit, event.pos())
+            if call:
+                self.callback(call)
+                return True
+        return False
 
 
 def add_slider(grid, row, col, name, slider, value):
