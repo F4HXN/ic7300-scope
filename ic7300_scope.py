@@ -18,6 +18,7 @@ import threading
 import time
 import unicodedata
 import wave
+import xml.etree.ElementTree as ET
 
 import numpy as np
 import serial
@@ -26,6 +27,8 @@ import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
 from cw_pioche import char_schedule, hand_timing
+import carnet
+from qrz import Qrz, QrzError, cw_name
 from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
 from cat_server import radio_port
@@ -67,6 +70,8 @@ STATE_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
 BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
 # indicatif et station de l'opérateur, pour les messages CW tout faits
 CALLSIGN_FILE = os.path.join(os.path.dirname(STATE_FILE), "indicatif.json")
+LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "carnet.adi")
+MACROS_FILE = os.path.join(os.path.dirname(STATE_FILE), "messages-cw.json")
 MEMORY_DUMP_FILE = os.path.join(os.path.dirname(STATE_FILE), "memoires-radio-brut.txt")
 # champs de « Ma station… » : clé, libellé, valeur de départ
 STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
@@ -75,6 +80,19 @@ STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
                   ("rig", "Transceiver", "IC7300"),
                   ("pwr", "Puissance (W)", ""),
                   ("ant", "Antenne", "")]
+# comptes en ligne, dans « Ma station… » : (clé, libellé, masqué, aide)
+ACCOUNT_FIELDS = [
+    ("qrz_user", "Compte qrz.com", False,
+     "Identifiant qrz.com : prénom du correspondant trouvé tout seul"),
+    ("qrz_password", "Mot de passe qrz.com", True, "Mot de passe qrz.com"),
+    ("qrz_logbook_key", "Clé API carnet qrz.com", True,
+     "qrz.com > Logbook > Settings > API key : les QSO notés y sont envoyés"),
+    ("wavelog_url", "Adresse Wavelog", False,
+     "Adresse de ton Wavelog, ex. https://log.exemple.fr"),
+    ("wavelog_key", "Clé API Wavelog", True,
+     "Wavelog > compte > API Keys : clé en lecture-écriture"),
+    ("wavelog_station", "Profil de station Wavelog", False,
+     "Nom ou numéro du profil de station (Wavelog > Station Locations)")]
 # messages CW d'un QSO classique, dans l'ordre : {call} mon indicatif, {dest}
 # et {dname} indicatif et prénom du correspondant, {gm} GM/GA/GE selon l'heure,
 # les autres viennent de « Ma station… » ; ^SK est le signe SK lié
@@ -91,6 +109,11 @@ CW_MACROS = [
     ("Fin", "Réponse à la fin du correspondant",
      "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} ^SK"),
 ]
+# champs utilisables dans les messages CW : {clé}, libellé
+MACRO_FIELDS = [("call", "Mon indicatif"), ("dest", "Correspondant"),
+                ("dname", "Son prénom"), ("gm", "GM/GA/GE"), ("name", "Mon prénom"),
+                ("qth", "QTH"), ("loc", "Locator"), ("rig", "Transceiver"),
+                ("pwr", "Puissance"), ("ant", "Antenne")]
 RTTY_DECODERS = ("rtty", "rtty50")
 # abréviations de fin de message : texte, sens
 CW_ENDINGS = [
@@ -1347,6 +1370,9 @@ class DecodedTextWindow(QtWidgets.QWidget):
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    qrz_found = QtCore.pyqtSignal(str, object, str)   # indicatif, fiche, erreur
+    log_sent = QtCore.pyqtSignal(str, str, bool, str)  # indicatif, service, réussi, message
+
     def __init__(self, args):
         super().__init__()
         self.setWindowTitle("IC-7300 Scope")
@@ -1940,6 +1966,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dest_name.setPlaceholderText("Son prénom")
         self.dest_name.setMaximumWidth(120)
         CallsignClick(self.decoder_text, self.set_correspondent)
+        self.qrz = None                     # session qrz.com, ouverte au besoin
+        self.qrz_asked = ""                 # dernier indicatif cherché
+        self.qrz_found.connect(self.on_qrz_found)
+        self.dest_call.editingFinished.connect(
+            lambda: self.lookup_name(self.dest_call.text().strip()))
         for field in (self.dest_call, self.dest_name):
             field.setStyleSheet("font: 12pt monospace;")
             field.textEdited.connect(
@@ -1958,12 +1989,20 @@ class MainWindow(QtWidgets.QMainWindow):
         macro_row.addWidget(self.dest_name)
         macro_row.addSpacing(10)
         self.cw_macro_buttons = []
-        for name, tip, text in CW_MACROS:
-            button = QtWidgets.QPushButton(name)
-            button.setToolTip(f"{tip} :\n{text}\nMis dans le champ CW, Entrée pour envoyer")
-            button.clicked.connect(lambda _, text=text: self.on_cw_macro(text))
-            macro_row.addWidget(button)
-            self.cw_macro_buttons.append(button)
+        self.cw_macro_row = QtWidgets.QHBoxLayout()
+        self.cw_macro_row.setContentsMargins(0, 0, 0, 0)
+        macro_row.addLayout(self.cw_macro_row)
+        try:
+            with open(MACROS_FILE) as f:
+                self.cw_macros = [tuple(m) for m in json.load(f)]
+        except (OSError, ValueError, TypeError):
+            self.cw_macros = list(CW_MACROS)
+        self._build_cw_macros()
+        edit_macros = QtWidgets.QPushButton("✎")
+        edit_macros.setMaximumWidth(36)
+        edit_macros.setToolTip("Modifier les messages CW pré-enregistrés")
+        edit_macros.clicked.connect(self.on_edit_macros)
+        macro_row.addWidget(edit_macros)
         # abréviation de fin : remplace celle qui termine déjà le message
         self.cw_ending = QtWidgets.QComboBox()
         self.cw_ending.addItem("Fin de message…", None)
@@ -1979,6 +2018,13 @@ class MainWindow(QtWidgets.QMainWindow):
         macro_row.addWidget(self.cw_ending)
         self.cw_macro_buttons.append(self.cw_ending)
         macro_row.addStretch()
+        log_button = QtWidgets.QPushButton("Noter le QSO")
+        log_button.setToolTip("Fiche du QSO, envoyée à Wavelog et au carnet "
+                              f"qrz.com, copie dans {LOG_FILE}")
+        log_button.clicked.connect(self.on_log_qso)
+        macro_row.addWidget(log_button)
+        self.log_results = {}           # indicatif → résultats des envois
+        self.log_sent.connect(self.on_log_sent)
         # juste sous le texte décodé : réception puis réponse
         index = layout.indexOf(self.decoder_text) + 1
         layout.insertLayout(index, cw_row)
@@ -2394,6 +2440,50 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dest_name.clear()          # prénom d'un autre QSO
         self.dest_call.setText(call)
         self.statusBar().showMessage(f"Correspondant : {call}")
+        self.lookup_name(call)
+
+    def lookup_name(self, call):
+        """Prénom du correspondant cherché sur qrz.com, en arrière-plan."""
+        user = self.station.get("qrz_user", "")
+        password = self.station.get("qrz_password", "")
+        if not call or call == self.qrz_asked:
+            return
+        if not (user and password):
+            self.statusBar().showMessage(
+                f"Correspondant : {call} — pour son prénom, renseigner le compte "
+                f"qrz.com dans Ma station…")
+            return
+        self.qrz_asked = call
+        if self.qrz is None or (self.qrz.user, self.qrz.password) != (user, password):
+            self.qrz = Qrz(user, password)
+        qrz = self.qrz
+        self.statusBar().showMessage(f"Correspondant : {call} — recherche sur qrz.com…")
+
+        def search():
+            try:
+                self.qrz_found.emit(call, qrz.lookup(call), "")
+            except QrzError as e:
+                self.qrz_found.emit(call, None, str(e))
+            except (OSError, ET.ParseError) as e:
+                self.qrz_found.emit(call, None, f"qrz.com injoignable ({e})")
+        threading.Thread(target=search, daemon=True).start()
+
+    def on_qrz_found(self, call, info, error):
+        if call != self.dest_call.text().strip():
+            return                          # un autre correspondant entre-temps
+        if error:
+            self.qrz_asked = ""             # nouvel essai au prochain clic
+            self.statusBar().showMessage(f"qrz.com : {error}")
+        elif info is None:
+            self.statusBar().showMessage(f"qrz.com : {call} inconnu")
+        else:
+            name = cw_name(info)
+            if name and not self.dest_name.text().strip():
+                self.dest_name.setText(name)
+            who = " ".join(filter(None, (info.get("fname"), info.get("name"))))
+            where = ", ".join(filter(None, (info.get("addr2"), info.get("country"))))
+            self.statusBar().showMessage(
+                f"qrz.com : {call} — " + " — ".join(filter(None, (who, where))))
 
     def on_cw_hand(self, on):
         self.station["pioche"] = on
@@ -2410,6 +2500,7 @@ class MainWindow(QtWidgets.QMainWindow):
             os.makedirs(os.path.dirname(CALLSIGN_FILE), exist_ok=True)
             with open(CALLSIGN_FILE, "w") as f:
                 json.dump(self.station, f)
+            os.chmod(CALLSIGN_FILE, 0o600)  # mots de passe et clés dedans
         except OSError:
             pass
 
@@ -2424,6 +2515,14 @@ class MainWindow(QtWidgets.QMainWindow):
             field.textEdited.connect(lambda text, field=field: self._upper(field, text))
             form.addRow(label, field)
             fields[key] = field
+        # comptes en ligne : prénom du correspondant, envoi des QSO
+        for key, label, hidden, tip in ACCOUNT_FIELDS:
+            field = QtWidgets.QLineEdit(self.station.get(key, ""))
+            if hidden:
+                field.setEchoMode(QtWidgets.QLineEdit.Password)
+            field.setToolTip(tip + "\nEnregistré sur ce PC seulement.")
+            form.addRow(label, field)
+            fields[key] = field
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
         buttons.accepted.connect(dialog.accept)
@@ -2435,12 +2534,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.on_callsign()
 
     def on_cw_macro(self, text):
-        hour = datetime.datetime.now().hour
-        values = {**self.station,
-                  "call": self.callsign.text().strip(),
-                  "dest": self.dest_call.text().strip(),
-                  "dname": self.dest_name.text().strip(),
-                  "gm": "GM" if hour < 12 else "GA" if hour < 18 else "GE"}
+        values = self.macro_values()
         # le prénom du correspondant peut manquer, pas le reste
         missing = {"call": ("ton indicatif", self.callsign),
                    "dest": ("l'indicatif du correspondant", self.dest_call)}
@@ -2454,8 +2548,46 @@ class MainWindow(QtWidgets.QMainWindow):
                 else:
                     self.on_station()
                 return
-        self.cw_text.setText(" ".join(text.format_map(values).split()))
+        self.cw_text.setText(" ".join(fill_macro(text, values).split()))
         self.cw_text.setFocus()
+
+    def _build_cw_macros(self):
+        """Un bouton par message CW pré-enregistré."""
+        enabled = self.cw_text.isEnabled()
+        for button in self.cw_macro_buttons:
+            if button is not self.cw_ending:
+                self.cw_macro_row.removeWidget(button)
+                button.deleteLater()
+        self.cw_macro_buttons = [b for b in self.cw_macro_buttons if b is self.cw_ending]
+        for i, (name, tip, text) in enumerate(self.cw_macros):
+            button = QtWidgets.QPushButton(name)
+            button.setToolTip(f"{tip} :\n{text}\nMis dans le champ CW, Entrée pour envoyer")
+            button.clicked.connect(lambda _, text=text: self.on_cw_macro(text))
+            button.setEnabled(enabled)
+            self.cw_macro_row.insertWidget(i, button)
+            self.cw_macro_buttons.insert(i, button)
+
+    def on_edit_macros(self):
+        dialog = CwMacroDialog(self.cw_macros, self.macro_values, self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        self.cw_macros = dialog.macros()
+        try:
+            os.makedirs(os.path.dirname(MACROS_FILE), exist_ok=True)
+            with open(MACROS_FILE, "w") as f:
+                json.dump(self.cw_macros, f, ensure_ascii=False, indent=1)
+        except OSError as e:
+            self.statusBar().showMessage(f"Messages CW non enregistrés : {e}")
+        self._build_cw_macros()
+
+    def macro_values(self):
+        """Valeurs des champs {…} des messages CW, à cet instant."""
+        hour = datetime.datetime.now().hour
+        return {**self.station,
+                "call": self.callsign.text().strip(),
+                "dest": self.dest_call.text().strip(),
+                "dname": self.dest_name.text().strip(),
+                "gm": "GM" if hour < 12 else "GA" if hour < 18 else "GE"}
 
     def on_cw_ending(self, index):
         ending = self.cw_ending.itemData(index)
@@ -2471,6 +2603,114 @@ class MainWindow(QtWidgets.QMainWindow):
                 break
         self.cw_text.setText(" ".join(words + [ending]))
         self.cw_text.setFocus()
+
+    def on_log_qso(self):
+        """Fiche du QSO pré-remplie, puis envoi à Wavelog et à qrz.com."""
+        hz = self.freq_hz or 0
+        mode, submode = carnet.adif_mode(self.mode_combo.currentText(),
+                                         self.decoder_combo.currentData())
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Noter le QSO")
+        form = QtWidgets.QFormLayout(dialog)
+        when = QtWidgets.QDateTimeEdit(QtCore.QDateTime.currentDateTimeUtc())
+        when.setTimeSpec(QtCore.Qt.UTC)
+        when.setDisplayFormat("dd/MM/yyyy HH:mm:ss 'UTC'")
+        fields = {}
+        for key, label, value in (
+                ("call", "Indicatif", self.dest_call.text().strip()),
+                ("name", "Prénom", self.dest_name.text().strip()),
+                ("freq", "Fréquence (MHz)", f"{hz / 1e6:.6f}" if hz else ""),
+                ("mode", "Mode", mode), ("submode", "Sous-mode", submode),
+                ("rst_sent", "Report envoyé", carnet.default_report(mode)),
+                ("rst_rcvd", "Report reçu", carnet.default_report(mode)),
+                ("gridsquare", "Locator", ""), ("comment", "Commentaire", "")):
+            field = QtWidgets.QLineEdit(value)
+            if key != "comment":
+                field.textEdited.connect(lambda text, field=field: self._upper(field, text))
+            fields[key] = field
+            form.addRow(label, field)
+            if key == "name":
+                form.addRow("Date et heure", when)
+        wavelog_ok = all(self.station.get(k) for k in
+                         ("wavelog_url", "wavelog_key", "wavelog_station"))
+        qrz_ok = bool(self.station.get("qrz_logbook_key"))
+        targets = {}
+        for key, label, ok in (("wavelog", "Envoyer à Wavelog", wavelog_ok),
+                               ("qrz", "Envoyer au carnet qrz.com", qrz_ok)):
+            box = QtWidgets.QCheckBox(label)
+            box.setChecked(ok)
+            box.setEnabled(ok)
+            if not ok:
+                box.setToolTip("À régler dans Ma station…")
+            targets[key] = box
+            form.addRow(box)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        fields["call"].setFocus()
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        values = {key: field.text().strip() for key, field in fields.items()}
+        call = values["call"]
+        if not call:
+            self.statusBar().showMessage("QSO non noté : indicatif manquant")
+            return
+        utc = when.dateTime().toUTC()
+        try:
+            band = carnet.adif_band(float(values["freq"]) * 1e6)
+        except ValueError:
+            band = ""
+        qso = {"call": call, "name": values["name"],
+               "qso_date": utc.toString("yyyyMMdd"), "time_on": utc.toString("HHmmss"),
+               "band": band, "freq": values["freq"], "mode": values["mode"],
+               "submode": values["submode"], "rst_sent": values["rst_sent"],
+               "rst_rcvd": values["rst_rcvd"], "gridsquare": values["gridsquare"],
+               "comment": values["comment"],
+               "station_callsign": self.callsign.text().strip(),
+               "operator": self.callsign.text().strip(),
+               "my_gridsquare": self.station.get("loc", ""),
+               "tx_pwr": self.station.get("pwr", "")}
+        record = carnet.adif_record(qso)
+        try:
+            carnet.save_adif(LOG_FILE, record)
+        except OSError as e:
+            self.statusBar().showMessage(f"Copie locale du QSO impossible : {e}")
+        station = dict(self.station)
+        sends = [name for name, box in targets.items() if box.isChecked()]
+        self.log_results[call] = {name: None for name in sends}
+        self._show_log_results(call)
+
+        def send(name):
+            try:
+                if name == "wavelog":
+                    ok, message = carnet.send_wavelog(
+                        station["wavelog_url"], station["wavelog_key"],
+                        station["wavelog_station"], record)
+                else:
+                    ok, message = carnet.send_qrz(station["qrz_logbook_key"], record)
+            except (OSError, ValueError) as e:
+                ok, message = False, f"injoignable ({e})"
+            self.log_sent.emit(call, name, ok, message)
+        for name in sends:
+            threading.Thread(target=send, args=(name,), daemon=True).start()
+
+    def on_log_sent(self, call, service, ok, message):
+        self.log_results.setdefault(call, {})[service] = (ok, message)
+        self._show_log_results(call)
+
+    def _show_log_results(self, call):
+        names = {"wavelog": "Wavelog", "qrz": "qrz.com"}
+        parts = ["copie locale ✓"]
+        for service, result in self.log_results.get(call, {}).items():
+            if result is None:
+                parts.append(f"{names[service]} …")
+            elif result[0]:
+                parts.append(f"{names[service]} ✓")
+            else:
+                parts.append(f"{names[service]} ✗ {result[1]}")
+        self.statusBar().showMessage(f"QSO {call} : " + ", ".join(parts))
 
     def on_qrz_lookup(self):
         call = self.dest_call.text().strip()
@@ -3096,6 +3336,163 @@ class MainWindow(QtWidgets.QMainWindow):
         # écoute rendue non muette, sinon PipeWire la garde coupée au lancement suivant
         self._pactl_stream("set-sink-input-mute", "0")
         super().closeEvent(event)
+
+
+def fill_macro(text, values):
+    """Remplace les {champs} connus ; un champ inconnu ou une accolade seule
+    restent tels quels (message écrit à la main)."""
+    return re.sub(r"\{(\w+)\}",
+                  lambda m: str(values.get(m.group(1), m.group(0))), text)
+
+
+class CwMacroDialog(QtWidgets.QDialog):
+    """Messages CW pré-enregistrés : nom du bouton, description, texte."""
+
+    def __init__(self, macros, values, parent):
+        super().__init__(parent)
+        self.setWindowTitle("Messages CW")
+        self.resize(900, 520)
+        self.values = values            # fonction : valeurs pour l'aperçu
+        self.items = [list(m) for m in macros]
+        layout = QtWidgets.QHBoxLayout(self)
+        left = QtWidgets.QVBoxLayout()
+        self.list = QtWidgets.QListWidget()
+        self.list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
+        self.list.model().rowsMoved.connect(self._reordered)
+        self.list.currentRowChanged.connect(self._show)
+        left.addWidget(self.list)
+        buttons = QtWidgets.QGridLayout()
+        for i, (label, slot) in enumerate((("Ajouter", self._add), ("Supprimer", self._remove),
+                                           ("▲ Monter", lambda: self._move(-1)),
+                                           ("▼ Descendre", lambda: self._move(1)))):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(slot)
+            buttons.addWidget(button, i // 2, i % 2)
+        left.addLayout(buttons)
+        layout.addLayout(left, 1)
+
+        right = QtWidgets.QFormLayout()
+        self.name = QtWidgets.QLineEdit()
+        self.name.setMaxLength(14)
+        self.tip = QtWidgets.QLineEdit()
+        self.text = QtWidgets.QPlainTextEdit()
+        self.text.setStyleSheet("font: 12pt monospace;")
+        self.text.setMinimumHeight(120)
+        fields = QtWidgets.QGridLayout()
+        fields.setSpacing(4)
+        for i, (key, label) in enumerate(MACRO_FIELDS):
+            button = QtWidgets.QPushButton(label)
+            button.setToolTip(f"Insère {{{key}}}")
+            button.clicked.connect(lambda _, key=key: self._insert(key))
+            fields.addWidget(button, i // 5, i % 5)
+        self.preview = QtWidgets.QLabel()
+        self.preview.setWordWrap(True)
+        self.preview.setStyleSheet(f"font: 12pt monospace; color: {TX_TEXT_COLOR};")
+        right.addRow("Bouton", self.name)
+        right.addRow("Description", self.tip)
+        right.addRow("Texte", self.text)
+        right.addRow("Insérer", fields)
+        right.addRow("Aperçu", self.preview)
+        reset = QtWidgets.QPushButton("Messages d'origine")
+        reset.setToolTip("Remet les messages livrés avec l'appli")
+        reset.clicked.connect(self._reset)
+        box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        box.addButton(reset, QtWidgets.QDialogButtonBox.ResetRole)
+        box.accepted.connect(self.accept)
+        box.rejected.connect(self.reject)
+        right.addRow(box)
+        layout.addLayout(right, 2)
+        self.name.textEdited.connect(self._edited)
+        self.tip.textEdited.connect(self._edited)
+        self.text.textChanged.connect(self._edited)
+        self._fill(0)
+
+    def _fill(self, row):
+        self.list.blockSignals(True)
+        self.list.clear()
+        self.list.addItems([m[0] for m in self.items])
+        self.list.blockSignals(False)
+        self.list.setCurrentRow(min(row, len(self.items) - 1))
+        self._show(self.list.currentRow())
+
+    def _show(self, row):
+        on = 0 <= row < len(self.items)
+        for widget in (self.name, self.tip, self.text):
+            widget.blockSignals(True)
+            widget.setEnabled(on)
+        name, tip, text = self.items[row] if on else ("", "", "")
+        self.name.setText(name)
+        self.tip.setText(tip)
+        self.text.setPlainText(text)
+        for widget in (self.name, self.tip, self.text):
+            widget.blockSignals(False)
+        self._preview()
+
+    def _edited(self):
+        row = self.list.currentRow()
+        if not 0 <= row < len(self.items):
+            return
+        cursor = self.text.textCursor().position()
+        upper = self.text.toPlainText().upper()
+        # majuscules, sauf dans les {champs}
+        upper = re.sub(r"\{(\w+)\}", lambda m: m.group(0).lower(), upper)
+        if upper != self.text.toPlainText():
+            self.text.blockSignals(True)
+            self.text.setPlainText(upper)
+            c = self.text.textCursor()
+            c.setPosition(min(cursor, len(upper)))
+            self.text.setTextCursor(c)
+            self.text.blockSignals(False)
+        self.items[row] = [self.name.text(), self.tip.text(), upper]
+        self.list.item(row).setText(self.name.text())
+        self._preview()
+
+    def _preview(self):
+        text = " ".join(self.text.toPlainText().split())
+        self.preview.setText(fill_macro(text, self.values()) if text else "")
+
+    def _insert(self, key):
+        self.text.insertPlainText(f"{{{key}}} ")
+        self.text.setFocus()
+
+    def _add(self):
+        self.items.append(["Nouveau", "", "{dest} DE {call} K"])
+        self._fill(len(self.items) - 1)
+        self.name.selectAll()
+        self.name.setFocus()
+
+    def _remove(self):
+        row = self.list.currentRow()
+        if 0 <= row < len(self.items):
+            del self.items[row]
+            self._fill(row)
+
+    def _move(self, step):
+        row = self.list.currentRow()
+        if 0 <= row < len(self.items) and 0 <= row + step < len(self.items):
+            self.items[row], self.items[row + step] = self.items[row + step], self.items[row]
+            self._fill(row + step)
+
+    def _reordered(self):
+        # glisser-déposer dans la liste : on suit le nouvel ordre des noms
+        order = [self.list.item(i).text() for i in range(self.list.count())]
+        remaining = list(self.items)
+        self.items = []
+        for name in order:
+            for m in remaining:
+                if m[0] == name:
+                    self.items.append(m)
+                    remaining.remove(m)
+                    break
+
+    def _reset(self):
+        self.items = [list(m) for m in CW_MACROS]
+        self._fill(0)
+
+    def macros(self):
+        """Messages gardés : ceux qui ont un nom et un texte."""
+        return [tuple(m) for m in self.items if m[0].strip() and m[2].strip()]
 
 
 def callsign_at(edit, pos):
