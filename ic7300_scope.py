@@ -27,13 +27,13 @@ from cw_decoder import CwDecoder
 from cw_pioche import hand_timing
 from rtty_decoder import RttyDecoder
 from ft8_decoder import Ft4Decoder, Ft8Decoder
+from cat_server import radio_port
 from memory_window import MemoryWindow
 from sstv_window import SstvWindow, bring_to_front
 
 DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
 RADIO_SINK = "alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
-DEFAULT_PORT = ("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_"
-                "Controller_IC-7300_03009829-if00-port0")
+DEFAULT_PORT = radio_port()
 
 # Flux de l'écoute permanente (~/.config/pipewire/pipewire.conf.d/50-ic7300-loopback.conf)
 LOOPBACK_STREAM = "ic7300_loopback_out"
@@ -1924,7 +1924,7 @@ class MainWindow(QtWidgets.QMainWindow):
         macro_row.addSpacing(10)
         macro_row.addWidget(QtWidgets.QLabel("Correspondant"))
         macro_row.addWidget(self.dest_call)
-        qrz_button = QtWidgets.QPushButton("🔎")
+        qrz_button = QtWidgets.QPushButton(magnifier_icon(), "")
         qrz_button.setToolTip("Fiche du correspondant sur qrz.com")
         qrz_button.setMaximumWidth(36)
         qrz_button.clicked.connect(self.on_qrz_lookup)
@@ -3019,6 +3019,24 @@ def enlarge_slider_labels(row):
                     font = label.font()
                     font.setPointSizeF(font.pointSizeF() * 1.25)
                     label.setFont(font)
+
+
+def magnifier_icon(size=22, color="#e0e0e0"):
+    """Loupe dessinée : l'emoji 🔎 reste vide avec Qt5 et Noto Color Emoji."""
+    pixmap = QtGui.QPixmap(size, size)
+    pixmap.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pixmap)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    pen = QtGui.QPen(QtGui.QColor(color), size / 9, cap=QtCore.Qt.RoundCap)
+    painter.setPen(pen)
+    radius = size * 0.3
+    center = QtCore.QPointF(size * 0.42, size * 0.42)
+    painter.drawEllipse(center, radius, radius)
+    pen.setWidthF(size / 6)
+    painter.setPen(pen)
+    painter.drawLine(QtCore.QPointF(size * 0.65, size * 0.65), QtCore.QPointF(size * 0.88, size * 0.88))
+    painter.end()
+    return QtGui.QIcon(pixmap)
 
 
 def dark_palette():
