@@ -173,6 +173,9 @@ DATA_MODES = ("LSB", "USB")     # proposés aussi en mode data (LSB-D, USB-D)
 MODE_NAMES = ["LSB", "LSB-D", "USB", "USB-D", "AM", "CW", "RTTY", "FM",
               "CW-R", "RTTY-R"]
 TX_TIMEOUT = 180                # s : l'émission est coupée au-delà
+SLIDER_WIDTH = 150              # px : curseurs de la grille du son
+SOUND_GAPS = (4, 8, 12, 16)     # colonnes vides entre les groupes de la grille
+SOUND_COLUMNS = 20              # colonne élastique, à droite de la grille
 # repères de l'IC-7300 pour les mesures en émission
 PO_POINTS = [(0, 0), (143, 50), (213, 100), (255, 120)]           # % de puissance
 SWR_POINTS = [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (255, 6.0)]
@@ -1634,40 +1637,40 @@ class MainWindow(QtWidgets.QMainWindow):
         controls.addWidget(self.range_spin)
         controls.addStretch()
 
-        # Volumes : le son de la radio sur le PC, et le volume de la radio
-        # (ligne à part : avec les réglages d'affichage, trop large pour l'écran)
-        volumes = QtWidgets.QHBoxLayout()
+        # Son : réception sur la première ligne, émission sur la seconde, en
+        # colonnes alignées : appareil du PC, niveau du PC, niveau de la
+        # radio, gain de la radio
+        sound = QtWidgets.QGridLayout()
+        sound.setHorizontalSpacing(8)
+        for col in SOUND_GAPS:
+            sound.setColumnMinimumWidth(col, 14)
+        sound.setColumnStretch(SOUND_COLUMNS, 1)
         self.pc_volume = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.pc_volume.setRange(0, 150)
-        self.pc_volume.setFixedWidth(180)
+        self.pc_volume.setFixedWidth(SLIDER_WIDTH)
         self.pc_volume.setToolTip("Volume du son de la radio sur le PC")
         self.pc_volume_label = QtWidgets.QLabel()
         self.pc_volume_label.setMinimumWidth(50)
         self.mute_check = QtWidgets.QCheckBox("Muet")
         self.af_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.af_slider.setRange(0, 255)
-        self.af_slider.setFixedWidth(180)
+        self.af_slider.setFixedWidth(SLIDER_WIDTH)
         self.af_slider.setToolTip("Volume du haut-parleur de la radio (AF). "
                                   "Ne change pas le son envoyé au PC.")
         self.af_label = QtWidgets.QLabel()
         self.af_label.setMinimumWidth(50)
-        volumes.addWidget(QtWidgets.QLabel("Volume PC"))
-        volumes.addWidget(self.pc_volume)
-        volumes.addWidget(self.pc_volume_label)
-        volumes.addWidget(self.mute_check)
         # sortie du PC où l'on entend la radio (haut-parleurs, casque…)
         self.pc_output = QtWidgets.QComboBox()
         self.pc_output.setToolTip("Sortie du PC où l'on entend la radio")
         self.pc_output.setSizeAdjustPolicy(
             QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.pc_output.setMinimumContentsLength(18)
-        volumes.addSpacing(10)
-        volumes.addWidget(QtWidgets.QLabel("Sortie"))
-        volumes.addWidget(self.pc_output)
-        volumes.addSpacing(20)
-        volumes.addWidget(QtWidgets.QLabel("AF radio"))
-        volumes.addWidget(self.af_slider)
-        volumes.addWidget(self.af_label)
+        self.pc_output.setMinimumContentsLength(22)
+        sound.addWidget(sound_title("RX", "#3ddc84"), 0, 0)
+        sound.addWidget(QtWidgets.QLabel("Sortie"), 0, 1)
+        sound.addWidget(self.pc_output, 0, 2)
+        sound.addWidget(self.mute_check, 0, 3)
+        add_slider(sound, 0, 5, "Volume PC", self.pc_volume, self.pc_volume_label)
+        add_slider(sound, 0, 9, "AF radio", self.af_slider, self.af_label)
         # gain RF et squelch de la radio
         self.level_sliders = {}
         for sub, name, tip in ((0x02, "RF", "Gain HF de la radio (RF GAIN). Le baisser "
@@ -1676,17 +1679,14 @@ class MainWindow(QtWidgets.QMainWindow):
                                 "ce niveau. À zéro, toujours ouvert.")):
             slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
             slider.setRange(0, 255)
-            slider.setFixedWidth(140)
+            slider.setFixedWidth(SLIDER_WIDTH)
             slider.setToolTip(tip)
             slider.setEnabled(False)        # activé quand la radio répond
             label = QtWidgets.QLabel()
             label.setMinimumWidth(45)
             slider.valueChanged.connect(
                 lambda value, sub=sub: self.on_level_slider(sub, value))
-            volumes.addSpacing(10)
-            volumes.addWidget(QtWidgets.QLabel(name))
-            volumes.addWidget(slider)
-            volumes.addWidget(label)
+            add_slider(sound, 0, 13 if sub == 0x02 else 17, name, slider, label)
             self.level_sliders[sub] = (slider, label)
 
         self.loopback = find_loopback_stream()
@@ -1712,10 +1712,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.af_slider.setEnabled(False)    # activé quand la radio répond
         self.af_slider.valueChanged.connect(self.on_af_slider)
         layout.addLayout(controls)
-        volumes.addStretch()
-        enlarge_slider_labels(volumes)
-        layout.addLayout(volumes)
-        tx_row_index = layout.count()     # ligne d'émission juste sous les volumes
+        layout.addLayout(sound)
+        layout.addSpacing(32)           # espace avant le décodeur
 
         # Décodeurs CW, RTTY, FT8 et FT4
         decoder_row = QtWidgets.QHBoxLayout()
@@ -1776,47 +1774,46 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Émission : micro du PC ou fichier, envoyés à la radio par l'USB
         self.radio_sink = args.sink
-        tx_row = QtWidgets.QHBoxLayout()
         self.power_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.power_slider.setRange(0, 100)
-        self.power_slider.setFixedWidth(170)
+        self.power_slider.setFixedWidth(SLIDER_WIDTH)
         self.power_slider.setToolTip("Puissance d'émission de la radio")
         self.power_slider.setEnabled(False)     # activé quand la radio répond
         self.power_label = QtWidgets.QLabel("")
         self.power_label.setMinimumWidth(55)
         self.tx_source = QtWidgets.QComboBox()
         for name, description in list_microphones(args.source):
-            self.tx_source.addItem(f"Micro : {description}", name)
+            self.tx_source.addItem(description, name)
         self.tx_source.addItem("Fichier audio", "file")
         self.tx_source.setToolTip("Ce qui part à l'émission")
         # les noms des micros peuvent être très longs : la liste déroulée les
         # montre en entier, la case reste raisonnable
         self.tx_source.setSizeAdjustPolicy(
             QtWidgets.QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.tx_source.setMinimumContentsLength(28)
+        self.tx_source.setMinimumContentsLength(22)
         self.tx_file = None
         self.tx_file_button = QtWidgets.QPushButton("Choisir…")
         self.tx_file_button.clicked.connect(self.choose_tx_file)
         self.tx_level = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.tx_level.setRange(0, 100)
-        self.tx_level.setFixedWidth(140)
+        self.tx_level.setFixedWidth(SLIDER_WIDTH)
         self.tx_level.setToolTip("Niveau du son envoyé à la radio. Le régler "
                                  "pour que l'ALC bouge sans dépasser.")
         volume = sink_volume(self.radio_sink)
         self.tx_level.setValue(volume if volume is not None else 50)
         self.tx_level_label = QtWidgets.QLabel(f"{self.tx_level.value()} %")
-        self.tx_level_label.setMinimumWidth(40)
+        self.tx_level_label.setMinimumWidth(50)
         self.tx_level.valueChanged.connect(self.on_tx_level)
         # gain USB de la radio : c'est lui qui fait monter l'ALC
         self.alc_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.alc_slider.setRange(0, 100)
-        self.alc_slider.setFixedWidth(140)
+        self.alc_slider.setFixedWidth(SLIDER_WIDTH)
         self.alc_slider.setToolTip("Gain de l'entrée USB de la radio (menu USB MOD "
                                    "Level). En émission, le monter jusqu'à ce que "
                                    "l'ALC bouge, sans rester au maximum.")
         self.alc_slider.setEnabled(False)       # activé quand la radio répond
         self.alc_slider_label = QtWidgets.QLabel("")
-        self.alc_slider_label.setMinimumWidth(40)
+        self.alc_slider_label.setMinimumWidth(45)
         self.tx_meter_label = QtWidgets.QLabel("")
         self.tx_meter_label.setStyleSheet("font: 11pt monospace;")
         self.ptt_button = QtWidgets.QPushButton("ÉMETTRE")
@@ -1826,29 +1823,18 @@ class MainWindow(QtWidgets.QMainWindow):
                                    f"{TX_TIMEOUT // 60} min (ou la durée du "
                                    f"fichier s'il est plus long).")
         self.ptt_button.toggled.connect(self.on_ptt)
-        tx_row.addWidget(QtWidgets.QLabel("Puissance"))
-        tx_row.addWidget(self.power_slider)
-        tx_row.addWidget(self.power_label)
-        tx_row.addSpacing(10)
-        tx_row.addWidget(self.tx_source)
-        tx_row.addWidget(self.tx_file_button)
-        tx_row.addSpacing(10)
-        tx_row.addWidget(QtWidgets.QLabel("Niveau"))
-        tx_row.addWidget(self.tx_level)
-        tx_row.addWidget(self.tx_level_label)
-        tx_row.addSpacing(10)
-        tx_row.addWidget(QtWidgets.QLabel("Réglage ALC"))
-        tx_row.addWidget(self.alc_slider)
-        tx_row.addWidget(self.alc_slider_label)
-        tx_row.addWidget(self.tx_meter_label)
-        tx_row.addStretch()
+        sound.addWidget(sound_title("TX", "#ef5350"), 1, 0)
+        sound.addWidget(QtWidgets.QLabel("Entrée"), 1, 1)
+        sound.addWidget(self.tx_source, 1, 2)
+        sound.addWidget(self.tx_file_button, 1, 3)
+        add_slider(sound, 1, 5, "Niveau PC", self.tx_level, self.tx_level_label)
+        add_slider(sound, 1, 9, "Puissance", self.power_slider, self.power_label)
+        add_slider(sound, 1, 13, "Réglage ALC", self.alc_slider, self.alc_slider_label)
+        sound.addWidget(self.tx_meter_label, 1, 17, 1, 3)
         # sous Enreg./Dossier, dans la colonne des bandes
         bands.addWidget(self.ptt_button, memory_row + 3, 0, 1, 2)
         bands.setRowStretch(memory_row + 4, 1)
         self._set_ptt_button(False)
-        enlarge_slider_labels(tx_row)
-        layout.insertLayout(tx_row_index, tx_row)
-        layout.insertSpacing(tx_row_index + 1, 32)  # espace avant le décodeur
 
         # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
         cw_row = QtWidgets.QHBoxLayout()
@@ -3008,17 +2994,23 @@ class MainWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-def enlarge_slider_labels(row):
-    """Texte un peu plus gros de part et d'autre de chaque curseur de la ligne."""
-    widgets = [row.itemAt(i).widget() for i in range(row.count())]
-    for i, widget in enumerate(widgets):
-        if isinstance(widget, QtWidgets.QSlider):
-            for label in (widgets[i - 1] if i else None,
-                          widgets[i + 1] if i + 1 < len(widgets) else None):
-                if isinstance(label, QtWidgets.QLabel):
-                    font = label.font()
-                    font.setPointSizeF(font.pointSizeF() * 1.25)
-                    label.setFont(font)
+def add_slider(grid, row, col, name, slider, value):
+    """Nom, curseur et valeur dans trois colonnes de la grille du son, le
+    texte un peu plus gros."""
+    for column, widget in ((col, QtWidgets.QLabel(name)), (col + 1, slider),
+                           (col + 2, value)):
+        if isinstance(widget, QtWidgets.QLabel):
+            font = widget.font()
+            font.setPointSizeF(font.pointSizeF() * 1.25)
+            widget.setFont(font)
+        grid.addWidget(widget, row, column)
+
+
+def sound_title(text, color):
+    """En-tête de ligne de la grille du son (RX, TX)."""
+    label = QtWidgets.QLabel(text)
+    label.setStyleSheet(f"color: {color}; font-weight: bold; font-size: 13pt;")
+    return label
 
 
 def magnifier_icon(size=22, color="#e0e0e0"):
