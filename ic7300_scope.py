@@ -223,6 +223,7 @@ TX_TIMEOUT = 180                # s : l'émission est coupée au-delà
 CALLSIGN_RE = re.compile(r"(?:[A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z]"
                          r"(?:/[A-Z0-9]{1,4})?")
 TX_TEXT_COLOR = "#ef5350"       # texte émis en CW, parmi le texte décodé
+CW_DIRECT_IDLE = 3.0            # s sans frappe en direct : fin de la ligne émise
 CW_ECHO_DELAY = 0.15            # s entre l'envoi CI-V et la première lettre manipulée
 SLIDER_WIDTH = 150              # px : curseurs de la grille du son
 SOUND_GAPS = (4, 8, 12, 16)     # colonnes vides entre les groupes de la grille
@@ -235,6 +236,7 @@ ID_POINTS = [(0, 0.0), (97, 10.0), (146, 15.0), (241, 25.0)]      # A
 ALC_ZONE = 120                  # au-delà, l'ALC sort de sa zone sur la radio
 MIN_FREQ = 30_000               # couverture de réception de l'IC-7300
 MAX_FREQ = 74_800_000
+DRAG_GAIN = 0.25                # glisser sur le waterfall : part de l'échelle
 SPANS = [2500, 5000, 10_000, 25_000, 50_000, 100_000, 250_000, 500_000]
 # largeur de FIL1, FIL2, FIL3 en kHz (réglages d'usine de l'IC-7300 ; chaque
 # mode a les siens : FIL3 vaut 1,8 kHz en BLU mais 3 kHz en AM)
@@ -244,9 +246,27 @@ FILTER_WIDTHS = {"LSB": (3.0, 2.4, 1.8), "USB": (3.0, 2.4, 1.8),
                  "RTTY": (2.4, 0.5, 0.25), "RTTY-R": (2.4, 0.5, 0.25)}
 
 
-def passband(mode, filt):
-    """Zone écoutée autour de la fréquence affichée, en kHz (approximative)."""
-    width = FILTER_WIDTHS.get(mode, (3.0, 3.0, 3.0))[(filt or 1) - 1]
+def width_hz(mode, index):
+    """Largeur du filtre (Hz) pour la valeur CI-V 0x1A 0x03 : de 50 Hz en
+    50 Hz jusqu'à 500 Hz puis de 100 Hz en 100 Hz (BLU, CW, RTTY), de 200 Hz
+    en 200 Hz en AM ; None en FM (largeur fixe)."""
+    if mode == "FM":
+        return None
+    if mode == "AM":
+        return (index + 1) * 200
+    return (index + 1) * 50 if index < 10 else 600 + (index - 10) * 100
+
+
+def width_text(hz):
+    return f"{hz / 1000:g} kHz".replace(".", ",") if hz >= 1000 else f"{hz} Hz"
+
+
+def passband(mode, filt, width=None):
+    """Zone écoutée autour de la fréquence affichée, en kHz (approximative).
+
+    width : largeur lue sur la radio (Hz), sinon celle d'usine du filtre."""
+    width = (width / 1000 if width else
+             FILTER_WIDTHS.get(mode, (3.0, 3.0, 3.0))[(filt or 1) - 1])
     if mode == "USB":
         return 0.1, 0.1 + width
     if mode == "LSB":
@@ -569,6 +589,7 @@ class CivReader(QtCore.QThread):
     level = QtCore.pyqtSignal(int, int)         # réglage 0x14 (RF 0x02, SQL 0x03), 0 à 255
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
     filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
+    filter_width = QtCore.pyqtSignal(int)       # largeur du filtre, valeur 0x1A 0x03
     power = QtCore.pyqtSignal(int)              # puissance réglée, 0 à 255
     key_speed = QtCore.pyqtSignal(int)          # vitesse du manipulateur, 0 à 255
     transmitting = QtCore.pyqtSignal(bool)      # la radio émet
@@ -600,6 +621,7 @@ class CivReader(QtCore.QThread):
         self._tuner = None
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
         self._pending_span = None
+        self._pending_width = None
         self._pending_power = None
         self._pending_key_speed = None
         self._break_in = None           # BK-IN : 0 arrêt, 1 semi, 2 full
@@ -626,6 +648,7 @@ class CivReader(QtCore.QThread):
         self._hand_queue = queue.Queue()
         self._hand_stop = threading.Event()
         self._hand_thread = None
+        self._hand_end = 0.0            # fin du dernier message à la pioche
 
     def run(self):
         while self._running:
@@ -696,6 +719,10 @@ class CivReader(QtCore.QThread):
         elif self._mode_code is not None:
             self._commands.put((0x06, self._mode_code, number))
 
+    def set_filter_width(self, index):
+        """Largeur du filtre en cours (0 à 40, 0 à 49 en AM)."""
+        self._pending_width = index
+
     def set_power(self, level):
         self._pending_power = level
 
@@ -748,8 +775,9 @@ class CivReader(QtCore.QThread):
                     text, wpm = self._hand_queue.get_nowait()
                 except queue.Empty:
                     return
-                # échéances cumulées : les retards de sleep ne s'additionnent pas
-                deadline = time.monotonic()
+                # échéances cumulées : les retards de sleep ne s'additionnent pas ;
+                # un mot qui suit de près le précédent (direct) attend l'espace
+                deadline = max(time.monotonic(), self._hand_end + 7 * 1.2 / wpm)
                 for down, duration in hand_timing(text, wpm):
                     if self._hand_stop.is_set() or ser is not self._ser:
                         return
@@ -757,6 +785,7 @@ class CivReader(QtCore.QThread):
                     deadline += duration
                     self._hand_stop.wait(max(0.0, deadline - time.monotonic()))
                 ser.dtr = False
+                self._hand_end = deadline
         except (serial.SerialException, OSError) as e:
             self.status.emit(f"Manipulation DTR impossible : {e}")
         finally:
@@ -905,9 +934,17 @@ class CivReader(QtCore.QThread):
                     self._command(ser, 0x1A, 0x06, data,
                                   self._filter if data else 0x00)
                 self._transact(ser, (0x1A, 0x06), (0x1A,))
+                self._transact(ser, (0x1A, 0x03), (0x1A,))
                 changed = True
+            width, self._pending_width = self._pending_width, None
+            if width is not None:
+                self._command(ser, 0x1A, 0x03, to_bcd_be(width))
             while not self._commands.empty():
-                self._command(ser, *self._commands.get())
+                command = self._commands.get()
+                self._command(ser, *command)
+                if command[0] == 0x06 or command[:2] == (0x1A, 0x06):
+                    # autre filtre : sa largeur
+                    self._transact(ser, (0x1A, 0x03), (0x1A,))
                 changed = True
             if not self._memory_jobs.empty():
                 # une écriture par tour : les mesures continuent
@@ -950,7 +987,7 @@ class CivReader(QtCore.QThread):
                 if n % 10 == 0:
                     queries += [(0x03,), (0x04,), (0x1A, 0x06)]
             elif n % 10 == 0:
-                queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x25, 0x01), (0x26, 0x01),
+                queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x1A, 0x03), (0x25, 0x01), (0x26, 0x01),
                            (0x14, 0x01), (0x14, 0x02), (0x14, 0x03), (0x14, 0x0A), (0x1C, 0x00),
                            (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65),
                            (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47), (0x15, 0x01)]
@@ -1105,6 +1142,8 @@ class CivReader(QtCore.QThread):
         elif cmd == 0x1C and len(data) == 2 and data[0] == 0x00:
             self._tx = data[1] == 0x01
             self.transmitting.emit(self._tx)
+        elif cmd == 0x1A and len(data) == 2 and data[0] == 0x03:
+            self.filter_width.emit(bcd_be(data[1:]))
         elif cmd == 0x1A and len(data) == 3 and data[0] == 0x06:
             self._data_state = (data[1], data[2])
             self._emit_mode()
@@ -1443,6 +1482,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.filter_buttons.addButton(button, number)
             filters.addWidget(button)
         self.filter_buttons.idClicked.connect(self.on_filter_selected)
+        # largeur du filtre en cours, réglée sur la radio (menu FILTER > BW)
+        self.width_index = None
+        self.width_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.width_slider.setRange(0, 40)
+        self.width_slider.setFixedWidth(110)
+        self.width_slider.setEnabled(False)     # activé quand la radio répond
+        self.width_slider.setToolTip("Largeur du filtre en cours (la radio la "
+                                     "garde pour ce filtre et ce mode)")
+        self.width_slider.valueChanged.connect(self.on_width_slider)
+        self.width_label = QtWidgets.QLabel()
+        self.width_label.setMinimumWidth(64)
+        filters.addSpacing(6)
+        filters.addWidget(self.width_slider)
+        filters.addWidget(self.width_label)
         self._filter_tooltips()
         top.addWidget(self.freq_label)
         top.addWidget(QtWidgets.QLabel("MHz"))
@@ -1669,8 +1722,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.wf_plot.vb.sigResized.connect(self._place_cursor_text)
         graphics.scene().sigMouseMoved.connect(self.on_mouse_moved)
         graphics.scene().sigMouseClicked.connect(self.on_mouse_clicked)
-        # molette : change la fréquence ; glisser en vue RF : déplace la bande
+        # molette : un pas par cran ; glisser en vue RF : vers la droite, la fréquence monte
         self.drag = None                # (x de départ, kHz par pixel, fréquence)
+        self.wf_wheel = 0               # molette sur le waterfall, en 1/120 de cran
         self.dragged = False
         # tirer la limite entre spectre et waterfall : change leur hauteur
         self.split_drag = False
@@ -1935,10 +1989,22 @@ class MainWindow(QtWidgets.QMainWindow):
             "au lieu des points et traits parfaits du manipulateur de la radio.\n"
             "Menu de la radio : SET > Connectors > USB SEND/Keying >\n"
             "USB Keying (CW) sur DTR.")
+        # direct : chaque touche part aussitôt, comme au manipulateur
+        self.cw_direct = QtWidgets.QCheckBox("Direct")
+        self.cw_direct.setToolTip(
+            "Chaque lettre tapée part aussitôt (pas d'Entrée). Pas de retour\n"
+            "en arrière possible une fois la lettre partie. Avec la pioche,\n"
+            "le mot part à l'espace.")
+        self.cw_direct.toggled.connect(self.on_cw_direct)
+        self.cw_direct_sent = ""        # texte du champ déjà émis en direct
+        self.cw_echo_space = False      # en direct : espace à écrire avant la lettre suivante
+        self.cw_text.textEdited.connect(self.on_cw_typed)
+        QtWidgets.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self.cw_text,
+                            lambda: self.on_cw_stop(), context=QtCore.Qt.WidgetShortcut)
         self.cw_send_button = QtWidgets.QPushButton("Envoyer")
         self.cw_send_button.clicked.connect(self.on_cw_send)
         self.cw_stop_button = QtWidgets.QPushButton("Stop")
-        self.cw_stop_button.setToolTip("Arrête le message en cours")
+        self.cw_stop_button.setToolTip("Arrête le message en cours (Échap)")
         self.cw_stop_button.clicked.connect(self.on_cw_stop)
         self.cw_echo = []           # lettres émises à écrire : (instant, texte, début)
         self.cw_echo_end = 0.0      # fin prévue du dernier message
@@ -1951,6 +2017,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cw_row.addWidget(self.cw_text, stretch=1)
         cw_row.addWidget(self.cw_speed)
         cw_row.addWidget(self.cw_hand)
+        cw_row.addWidget(self.cw_direct)
         cw_row.addWidget(self.cw_send_button)
         cw_row.addWidget(self.cw_stop_button)
         # indicatif et messages tout faits
@@ -2107,6 +2174,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.frequency.connect(self.on_frequency)
             self.civ.mode.connect(self.on_mode)
             self.civ.filter.connect(self.on_filter)
+            self.civ.filter_width.connect(self.on_filter_width)
             self.civ.other_frequency.connect(self.on_other_frequency)
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
@@ -2232,8 +2300,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.freq_hz is None:
             return
         f = self.freq_hz / 1000
-        low, high = passband(base_mode(self.mode_combo.currentText()),
-                             self.filter_num)
+        mode = base_mode(self.mode_combo.currentText())
+        width = None if self.width_index is None else width_hz(mode, self.width_index)
+        low, high = passband(mode, self.filter_num, width)
         for line in self.tuned_lines:
             line.setPos(f)
         for band in self.passbands:
@@ -2290,6 +2359,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_mode(self, name):
         self.mode_combo.setCurrentText(name)
+        if base_mode(name) == "FM":        # largeur fixe en FM
+            self.width_slider.setEnabled(False)
+            self.width_index = None
+            self.width_label.setText("fixe")
         self._update_tx_text()
         self._filter_tooltips()
         self._update_markers()
@@ -2299,6 +2372,29 @@ class MainWindow(QtWidgets.QMainWindow):
         button = self.filter_buttons.button(number)
         if button:
             button.setChecked(True)
+        self._update_markers()
+
+    def on_filter_width(self, index):
+        """Largeur lue sur la radio."""
+        mode = base_mode(self.mode_combo.currentText())
+        self.width_slider.setEnabled(mode != "FM")
+        self.width_slider.blockSignals(True)
+        self.width_slider.setMaximum(49 if mode == "AM" else 40)
+        if not self.width_slider.isSliderDown():
+            self.width_slider.setValue(index)
+        self.width_slider.blockSignals(False)
+        if not self.width_slider.isSliderDown():
+            self._show_width(index)
+
+    def on_width_slider(self, index):
+        if self.civ:
+            self.civ.set_filter_width(index)
+        self._show_width(index)
+
+    def _show_width(self, index):
+        self.width_index = index
+        hz = width_hz(base_mode(self.mode_combo.currentText()), index)
+        self.width_label.setText(width_text(hz) if hz else "fixe")
         self._update_markers()
 
     def on_filter_selected(self, number):
@@ -2424,6 +2520,7 @@ class MainWindow(QtWidgets.QMainWindow):
             "(^AR, ^SK… pour les signes liés)")
         self.cw_speed.setVisible(not rtty)
         self.cw_hand.setVisible(not rtty)
+        self.cw_direct.setVisible(not rtty)
         kind = "rtty" if rtty else "cw"
         if kind != self.macro_kind:
             self.macro_kind = kind
@@ -2446,25 +2543,88 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._rtty_tx():
             self.send_rtty(self.cw_text.text())
             return
+        if self.cw_direct.isChecked():
+            # Entrée en direct : ce qui reste (message tout fait, mot à la pioche)
+            text = self.cw_text.text()
+            sent = self.cw_direct_sent
+            rest = text[len(sent):] if text.startswith(sent) else text
+            self.cw_text.clear()
+            self.cw_direct_sent = ""
+            self._send_cw_text(rest)
+            return
+        self._send_cw_text(self.cw_text.text())
+        self.cw_text.clear()
+
+    def on_cw_direct(self, on):
+        self.cw_direct_sent = self.cw_text.text() if on else ""
+        self.cw_send_button.setEnabled(self.cw_text.isEnabled())
+        self.statusBar().showMessage(
+            "CW en direct : chaque lettre tapée part aussitôt" if on else "")
+
+    def on_cw_typed(self, text):
+        """En direct : envoie les lettres ajoutées depuis la dernière frappe."""
+        if not self.cw_direct.isChecked() or self._rtty_tx():
+            return
+        sent = self.cw_direct_sent
+        if not text.startswith(sent):
+            # retour en arrière : la lettre est déjà partie, on suit le champ
+            self.cw_direct_sent = text
+            return
+        added = text[len(sent):]
+        if self.cw_hand.isChecked():
+            # à la pioche, le rythme d'un mot se calcule d'un coup : il part à l'espace
+            if " " not in added:
+                return
+            word = text[len(sent):text.rindex(" ")]       # sent finit par une espace
+            self.cw_direct_sent = text[:text.rindex(" ") + 1]
+            if word.strip():
+                self._send_cw_text(word + " ", direct=True)
+            else:
+                self.cw_echo_space = True   # espace seule : le mot suivant s'en écarte
+            return
+        self.cw_direct_sent = text
+        self._send_cw_text(added, direct=True)
+
+    def _send_cw_text(self, raw, direct=False):
+        """Émet le texte en CW et l'écrit en rouge au rythme de la manipulation."""
         # caractères que la radio sait émettre ; ^ lie deux lettres (^AR)
-        text = "".join(c for c in self.cw_text.text().upper()
+        text = "".join(c for c in raw.upper()
                        if c.isascii() and (c.isalnum() or c in " /?.-,:'()=+\"@^"))
-        text = " ".join(text.split())
+        if direct:
+            text = text.replace("^", "")
+            if text.strip() == "" and text:
+                text = " "              # espace entre deux mots
+        else:
+            text = " ".join(text.split())
         if not text or not self.civ:
             return
         if self.cw_hand.isChecked():
             self.civ.send_cw_hand(text, self.cw_speed.value())
         else:
             self.civ.send_cw(text)
-        self.cw_text.clear()
-        self.statusBar().showMessage(f"CW : {text}")
+        if not direct:
+            self.statusBar().showMessage(f"CW : {text}")
         # le message émis s'écrit en rouge au rythme de la manipulation ; un
-        # message envoyé pendant le précédent part à sa suite
-        schedule, length = char_schedule(text, self.cw_speed.value())
+        # message envoyé pendant le précédent part à sa suite, sur la même
+        # ligne en direct
+        unit = 1.2 / self.cw_speed.value()
         start = max(time.monotonic() + CW_ECHO_DELAY, self.cw_echo_end)
-        for i, (t, chunk) in enumerate(schedule):
-            self.cw_echo.append((start + t, chunk, i == 0))
-        self.cw_echo_end = start + length + 7 * 1.2 / self.cw_speed.value()
+        live = self.cw_direct.isChecked() and self.cw_echo_timer.isActive()
+        if not live:
+            self.cw_echo_space = False
+        if not text.strip():
+            # espace tapée seule : 7 points avec les 3 qui suivent la lettre
+            self.cw_echo_space = True
+            self.cw_echo_end = start + 4 * unit
+        else:
+            schedule, length = char_schedule(text.strip(), self.cw_speed.value())
+            lead = " " if live and (self.cw_echo_space or text[0] == " ") else ""
+            for i, (t, chunk) in enumerate(schedule):
+                self.cw_echo.append((start + t, (lead if i == 0 else "") + chunk,
+                                     not live and i == 0))
+            self.cw_echo_space = text.endswith(" ")
+            gap = 7 if self.cw_echo_space or not direct else 3
+            self.cw_echo_end = start + length + gap * unit
         self.cw_echo_timer.start()
 
     def send_rtty(self, text):
@@ -2515,7 +2675,8 @@ class MainWindow(QtWidgets.QMainWindow):
             if first and not cursor.atBlockStart():
                 cursor.insertText("\n", QtGui.QTextCharFormat())
             cursor.insertText(chunk, sent)
-        if not self.cw_echo and now >= self.cw_echo_end:
+        idle = CW_DIRECT_IDLE if self.cw_direct.isChecked() else 0.0
+        if not self.cw_echo and now >= self.cw_echo_end + idle:
             self._end_cw_echo(cursor)
         self.decoder_text.setTextCursor(cursor)
         self.decoder_text.ensureCursorVisible()
@@ -3234,9 +3395,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if kind == QtCore.QEvent.Wheel:
             pos = self.spec_plot.scene().views()[0].mapToScene(event.pos())
             if self._x_at(pos) is not None and self.freq_hz is not None:
-                notches = event.angleDelta().y() / 120
-                if notches:
-                    self.on_tuned(round(notches) or (1 if notches > 0 else -1))
+                # un cran = un pas ; le pavé tactile envoie des fractions de
+                # cran, cumulées (sinon chaque petit geste ferait un pas)
+                self.wf_wheel += event.angleDelta().y()
+                steps = int(self.wf_wheel / 120)
+                if steps:
+                    self.wf_wheel -= steps * 120
+                    self.on_tuned(steps)
                 return True
         elif (kind == QtCore.QEvent.MouseButtonPress
               and event.button() == QtCore.Qt.LeftButton):
@@ -3253,10 +3418,12 @@ class MainWindow(QtWidgets.QMainWindow):
             if abs(dx) > 3:
                 self.dragged = True
             if self.dragged:
-                # on tire la bande : vers la gauche, la fréquence monte
-                hz = start_hz - dx * khz_per_px * 1000
-                step = min(self.step_combo.currentData(), 100)
-                self.tune_to(int(round(hz / step) * step))
+                # comme un bouton de VFO : vers la droite, la fréquence monte,
+                # au quart de l'échelle de l'écran pour la précision (Maj :
+                # encore 10 fois plus fin) ; pas de 10 Hz
+                gain = DRAG_GAIN / (10 if event.modifiers() & QtCore.Qt.ShiftModifier else 1)
+                hz = start_hz + (dx - 3 * (1 if dx > 0 else -1)) * khz_per_px * 1000 * gain
+                self.tune_to(int(round(hz / 10) * 10))
                 self.setCursor(QtCore.Qt.SizeHorCursor)
             return False
         elif kind == QtCore.QEvent.MouseButtonRelease and self.drag:
