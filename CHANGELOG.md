@@ -39,6 +39,7 @@
 | 35 | 24/10/2026 | `ce6b2f7` | Scanner VHF/UHF retiré du projet (sans rapport avec l'IC-7300) |
 | 36 | 24/10/2026 | `14c0fe3` | Réglages du son en grille : RX en haut, TX en bas, colonnes alignées |
 | 37 | 24/10/2026 | `109268e` | CW émise en rouge lettre par lettre, horloge UTC et locale, fréquence de la souris dans le waterfall |
+| 38 | 24/10/2026 | `55024a3` | Double-clic sur un indicatif du texte décodé : il passe en correspondant |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
