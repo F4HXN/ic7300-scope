@@ -16,19 +16,40 @@ from cw_decoder import MORSE
 CODE = {char: code for code, char in MORSE.items() if len(char) == 1}
 
 
-def _symbols(word):
-    """Codes Morse d'un mot ; ^ lie les deux lettres qui suivent (^SK)."""
+def _chunks(word):
+    """(texte, code Morse) de chaque signe d'un mot ; ^ lie les deux lettres
+    qui suivent (^SK)."""
     out, i = [], 0
     while i < len(word):
         pair = word[i + 1:i + 3]
         if word[i] == "^" and len(pair) == 2 and all(c in CODE for c in pair):
-            out.append(CODE[pair[0]] + CODE[pair[1]])
+            out.append((word[i:i + 3], CODE[pair[0]] + CODE[pair[1]]))
             i += 3
             continue
         if word[i] in CODE:
-            out.append(CODE[word[i]])
+            out.append((word[i], CODE[word[i]]))
         i += 1
     return out
+
+
+def _symbols(word):
+    """Codes Morse d'un mot."""
+    return [code for _, code in _chunks(word)]
+
+
+def char_schedule(text, wpm):
+    """Instant (s) où chaque signe commence au manipulateur, à la vitesse
+    nominale : [(instant, texte)], plus la durée totale. Une espace entre
+    deux mots part avec la première lettre du mot suivant."""
+    unit = 1.2 / wpm
+    out, t = [], 0.0
+    for w, word in enumerate(text.split()):
+        for s, (label, code) in enumerate(_chunks(word)):
+            if out:
+                t += unit * (7 if s == 0 else 3)
+            out.append((t, " " + label if w and s == 0 else label))
+            t += unit * (sum(1 if e == "." else 3 for e in code) + len(code) - 1)
+    return out, t
 
 
 def hand_timing(text, wpm, rng=random):
