@@ -192,7 +192,7 @@ CI-V. Les interrogations automatiques (S-mètre, scope…) sont masquées par d�
 **Sur le PC distant :**
 
 ```bash
-python3 ic7300_scope.py --remote 192.168.1.37
+python3 ic7300_scope.py --remote <IP-du-PC-de-la-radio>
 ```
 
 > 🛡️ **Sécurité** : si la liaison se coupe (Wi-Fi, câble, PC planté), le
