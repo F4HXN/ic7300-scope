@@ -2023,6 +2023,11 @@ class MainWindow(QtWidgets.QMainWindow):
                               f"qrz.com, copie dans {LOG_FILE}")
         log_button.clicked.connect(self.on_log_qso)
         macro_row.addWidget(log_button)
+        logbook_button = QtWidgets.QPushButton("Carnet…")
+        logbook_button.setToolTip(f"Les QSO notés ({LOG_FILE})")
+        logbook_button.clicked.connect(self.on_logbook)
+        macro_row.addWidget(logbook_button)
+        self.logbook_window = None
         self.log_results = {}           # indicatif → résultats des envois
         self.log_sent.connect(self.on_log_sent)
         # juste sous le texte décodé : réception puis réponse
@@ -2677,6 +2682,8 @@ class MainWindow(QtWidgets.QMainWindow):
             carnet.save_adif(LOG_FILE, record)
         except OSError as e:
             self.statusBar().showMessage(f"Copie locale du QSO impossible : {e}")
+        if self.logbook_window:
+            self.logbook_window.reload()
         station = dict(self.station)
         sends = [name for name, box in targets.items() if box.isChecked()]
         self.log_results[call] = {name: None for name in sends}
@@ -2695,6 +2702,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.log_sent.emit(call, name, ok, message)
         for name in sends:
             threading.Thread(target=send, args=(name,), daemon=True).start()
+
+    def on_logbook(self):
+        if self.logbook_window is None:
+            self.logbook_window = LogbookWindow(LOG_FILE, self)
+        self.logbook_window.reload()
+        bring_to_front(self.logbook_window)
 
     def on_log_sent(self, call, service, ok, message):
         self.log_results.setdefault(call, {})[service] = (ok, message)
@@ -3343,6 +3356,151 @@ def fill_macro(text, values):
     restent tels quels (message écrit à la main)."""
     return re.sub(r"\{(\w+)\}",
                   lambda m: str(values.get(m.group(1), m.group(0))), text)
+
+
+class LogbookWindow(QtWidgets.QWidget):
+    """Les QSO du carnet local, le plus récent en haut.
+
+    Double-clic sur une ligne : l'indicatif devient le correspondant.
+    Modifier et Effacer ne touchent que la copie locale."""
+
+    COLUMNS = (("Date", "qso_date"), ("UTC", "time_on"), ("Indicatif", "call"),
+               ("Prénom", "name"), ("Bande", "band"), ("MHz", "freq"),
+               ("Mode", "mode"), ("Envoyé", "rst_sent"), ("Reçu", "rst_rcvd"),
+               ("Locator", "gridsquare"), ("Commentaire", "comment"))
+
+    def __init__(self, path, parent):
+        super().__init__(parent, QtCore.Qt.Window)
+        self.setWindowTitle("Carnet de trafic — IC-7300 Scope")
+        self.resize(900, 450)
+        self.path = path
+        layout = QtWidgets.QVBoxLayout(self)
+        self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels([c[0] for c in self.COLUMNS])
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.table.verticalHeader().hide()
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.cellDoubleClicked.connect(
+            lambda row, col: parent.set_correspondent(self.table.item(row, 2).text()))
+        self.qsos = []                  # dans l'ordre du fichier
+        self.rows = []                  # ligne du tableau → indice dans qsos
+        QtWidgets.QShortcut(QtGui.QKeySequence.Delete, self.table, self.delete)
+        layout.addWidget(self.table, stretch=1)
+        row = QtWidgets.QHBoxLayout()
+        self.count = QtWidgets.QLabel()
+        row.addWidget(self.count)
+        row.addStretch()
+        for label, slot in (("Modifier…", self.edit), ("Effacer", self.delete),
+                            ("Actualiser", self.reload),
+                            ("Ouvrir le fichier", lambda: self._open(self.path)),
+                            ("Ouvrir le dossier",
+                             lambda: self._open(os.path.dirname(self.path)))):
+            button = QtWidgets.QPushButton(label)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        layout.addLayout(row)
+
+    @staticmethod
+    def _open(path):
+        QtGui.QDesktopServices.openUrl(QtCore.QUrl.fromLocalFile(path))
+
+    @staticmethod
+    def _show(key, value):
+        if key == "qso_date" and len(value) == 8:
+            return f"{value[6:]}/{value[4:6]}/{value[:4]}"
+        if key == "time_on" and len(value) >= 4:
+            return f"{value[:2]}:{value[2:4]}"
+        return value
+
+    def reload(self):
+        try:
+            qsos = carnet.read_adif(self.path)
+        except FileNotFoundError:
+            qsos = []
+        except OSError as e:
+            self.count.setText(f"Carnet illisible : {e}")
+            return
+        self.qsos = qsos
+        self.rows = sorted(range(len(qsos)), reverse=True, key=lambda i: (
+            qsos[i].get("qso_date", ""), qsos[i].get("time_on", "")))
+        self.table.setRowCount(len(qsos))
+        for r, qso in enumerate(qsos[i] for i in self.rows):
+            for c, (_, key) in enumerate(self.COLUMNS):
+                self.table.setItem(r, c, QtWidgets.QTableWidgetItem(
+                    self._show(key, qso.get(key, ""))))
+        self.table.resizeColumnsToContents()
+        self.count.setText(f"{len(qsos)} QSO — {self.path}")
+
+    def _selected(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self.rows):
+            return self.rows[row]
+        self.count.setText("Choisir d'abord un QSO dans la liste")
+        return None
+
+    def _save(self):
+        try:
+            carnet.write_adif(self.path, self.qsos)
+        except OSError as e:
+            QtWidgets.QMessageBox.warning(self, "Carnet", f"Carnet non enregistré : {e}")
+        self.reload()
+
+    def delete(self):
+        index = self._selected()
+        if index is None:
+            return
+        qso = self.qsos[index]
+        when = f"{self._show('qso_date', qso.get('qso_date', ''))} " \
+               f"{self._show('time_on', qso.get('time_on', ''))}"
+        if QtWidgets.QMessageBox.question(
+                self, "Effacer le QSO",
+                f"Effacer le QSO avec {qso.get('call', '?')} du {when} UTC ?\n\n"
+                "Seule la copie locale est effacée : Wavelog et qrz.com "
+                "se corrigent sur leur site.") != QtWidgets.QMessageBox.Yes:
+            return
+        del self.qsos[index]
+        self._save()
+
+    def edit(self):
+        index = self._selected()
+        if index is None:
+            return
+        qso = self.qsos[index]
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle(f"Modifier le QSO — {qso.get('call', '')}")
+        form = QtWidgets.QFormLayout(dialog)
+        utc = QtCore.QDateTime.fromString(
+            qso.get("qso_date", "") + qso.get("time_on", "").ljust(6, "0"),
+            "yyyyMMddHHmmss")
+        utc.setTimeSpec(QtCore.Qt.UTC)      # l'heure du carnet est déjà en UTC
+        when = QtWidgets.QDateTimeEdit(utc)
+        when.setTimeSpec(QtCore.Qt.UTC)
+        when.setDisplayFormat("dd/MM/yyyy HH:mm:ss 'UTC'")
+        form.addRow("Date et heure", when)
+        fields = {}
+        for label, key in self.COLUMNS:
+            if key in ("qso_date", "time_on", "band"):
+                continue
+            fields[key] = QtWidgets.QLineEdit(qso.get(key, ""))
+            form.addRow(label, fields[key])
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        for key, field in fields.items():
+            value = field.text().strip()
+            qso[key] = value if key == "comment" else value.upper()
+        qso["qso_date"] = when.dateTime().toString("yyyyMMdd")
+        qso["time_on"] = when.dateTime().toString("HHmmss")
+        try:
+            qso["band"] = carnet.adif_band(float(qso["freq"]) * 1e6)
+        except ValueError:
+            pass
+        self._save()
 
 
 class CwMacroDialog(QtWidgets.QDialog):
