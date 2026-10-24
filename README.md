@@ -105,7 +105,7 @@ sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy python3-serial \
 ### Récupérer le projet
 
 ```bash
-git clone https://github.com/F4HXN/ic7300-scope.git
+git clone http://192.168.1.54:3000/polo/ic7300-scope.git
 cd ic7300-scope
 ./install.sh          # ajoute « IC-7300 Scope » au menu des applications
 ```
