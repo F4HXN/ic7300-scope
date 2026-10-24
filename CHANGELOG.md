@@ -42,6 +42,7 @@
 | 38 | 24/10/2026 | `55024a3` | Double-clic sur un indicatif du texte décodé : il passe en correspondant |
 | 39 | 24/10/2026 | `7c31d4a` | Prénom depuis qrz.com, bouton « Noter le QSO » (Wavelog, carnet qrz.com, copie ADIF), messages CW modifiables |
 | 40 | 24/10/2026 | `40f1084` | Fenêtre « Carnet… » : liste des QSO notés, modifier ou effacer un QSO (copie locale, sauvegarde .bak) |
+| 41 | 24/10/2026 | `e0e49d6` | Émission RTTY en LSB-D/USB-D (AFSK 45 bauds sur les tonalités du décodeur, texte émis en rouge), messages pré-enregistrés séparés CW et RTTY, mémoires SSTV et RTTY |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
