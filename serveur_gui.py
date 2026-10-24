@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import time
+from collections import deque
 
 from PyQt5 import QtCore, QtGui, QtNetwork, QtWidgets
 
@@ -18,6 +19,7 @@ from cat_server import MONITOR_PATH
 DIR = os.path.dirname(os.path.abspath(__file__))
 SERVICE = "ic7300-cat-server.service"
 MAX_ROWS = 3000
+SHOWN_ROWS = 1000             # lignes dans le tableau : au-delà, Qt rame
 GREEN, RED, GREY = "#3ddc84", "#ef5350", "#78909c"
 
 MODES = {0x00: "LSB", 0x01: "USB", 0x02: "AM", 0x03: "CW", 0x04: "RTTY",
@@ -49,7 +51,10 @@ def bcd_frequency(data):
 
 
 def bcd_level(data):
-    return int(data.hex() or "0")
+    try:
+        return int(data.hex() or "0")
+    except ValueError:          # pas du BCD
+        return int.from_bytes(data, "big")
 
 
 def describe(frame):
@@ -61,7 +66,8 @@ def describe(frame):
         data = data[2:]
     name = NAMES.get(key, " ".join(f"{b:02X}" for b in key))
     to_radio = to != 0xE0
-    if to_radio and not data:
+    if to_radio and (not data or cmd in (0x25, 0x26) and len(data) == 1):
+        # 0x25/0x26 : le seul octet choisit le VFO lu
         return name, "lecture", True
     value = data.hex(" ").upper()
     if cmd in (0x00, 0x03, 0x05) and len(data) == 5:
@@ -114,6 +120,8 @@ class ServerWindow(QtWidgets.QWidget):
         self.client = None
         self.sent = 0
         self.buffer = b""
+        self.events = deque(maxlen=MAX_ROWS)   # tout le trafic, même masqué
+        self.incoming = []                     # pas encore affiché
 
         self.led = QtWidgets.QLabel("●")
         self.led.setStyleSheet(f"font: 28pt; color: {GREY};")
@@ -144,9 +152,10 @@ class ServerWindow(QtWidgets.QWidget):
         self.hide_auto.setToolTip("Lectures répétées de l'appli (S-mètre, scope, "
                                   "fréquence…) et réponses de la radio")
         self.hide_auto.setChecked(True)
-        self.hide_auto.toggled.connect(self.apply_filter)
+        self.hide_auto.toggled.connect(self.rebuild)
         self.pause = QtWidgets.QPushButton("Pause")
         self.pause.setCheckable(True)
+        self.pause.toggled.connect(lambda paused: paused or self.rebuild())
         clear = QtWidgets.QPushButton("Effacer")
         clear.clicked.connect(self.clear)
         tools = QtWidgets.QHBoxLayout()
@@ -163,10 +172,13 @@ class ServerWindow(QtWidgets.QWidget):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setStyleSheet("font: 11pt monospace;")
+        # Largeurs fixes : ResizeToContents relit toutes les lignes à chaque ajout.
         header = self.table.horizontalHeader()
-        for column in range(4):
-            header.setSectionResizeMode(column, QtWidgets.QHeaderView.ResizeToContents)
+        for column, width in enumerate((110, 90, 210, 160)):
+            header.resizeSection(column, width)
         header.setStretchLastSection(True)
+        self.table.verticalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Fixed)
+        self.table.verticalHeader().setDefaultSectionSize(24)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.addLayout(top)
@@ -179,6 +191,9 @@ class ServerWindow(QtWidgets.QWidget):
         self.socket.disconnected.connect(lambda: self.set_client(None))
         timer = QtCore.QTimer(self, interval=1000, timeout=self.refresh)
         timer.start()
+        # Le scope envoie des dizaines de trames par seconde : affichage groupé.
+        flush = QtCore.QTimer(self, interval=200, timeout=self.flush)
+        flush.start()
         self.refresh()
         self.update_count()
 
@@ -237,7 +252,7 @@ class ServerWindow(QtWidgets.QWidget):
             self.socket.abort()
         self.refresh()
         if self.state == "inactive" and result.returncode == 0:
-            self.add_row(time.time(), "serveur", "Serveur arrêté", "", "", GREY)
+            self.record(time.time(), "serveur", "Serveur arrêté", "", "", GREY, False)
 
     def closeEvent(self, event):
         self.socket.disconnected.disconnect()   # les étiquettes vont disparaître
@@ -270,7 +285,7 @@ class ServerWindow(QtWidgets.QWidget):
             if event["ev"] == "client":
                 self.set_client(event["host"])
             elif event["ev"] == "log":
-                self.add_row(event["t"], "serveur", event["msg"], "", "", GREY)
+                self.record(event["t"], "serveur", event["msg"], "", "", GREY, False)
             elif event["ev"] == "frame":
                 self.add_frame(event)
 
@@ -282,40 +297,58 @@ class ServerWindow(QtWidgets.QWidget):
         to_radio = event["dir"] == "tx"
         if to_radio and not automatic:
             self.sent += 1
-            self.update_count()
-        if self.pause.isChecked():
-            return
         color = "#ffd54a" if to_radio else "#4fc3f7"
         if name == "PTT" and value == "ÉMISSION":
             color = RED
-        row = self.add_row(event["t"], "→ radio" if to_radio else "← radio",
-                           name, value, event["hex"].upper(), color)
-        self.table.item(row, 0).setData(QtCore.Qt.UserRole, automatic)
-        self.table.setRowHidden(row, automatic and self.hide_auto.isChecked())
+        self.record(event["t"], "→ radio" if to_radio else "← radio",
+                    name, value, event["hex"].upper(), color, automatic)
 
-    def add_row(self, t, direction, name, value, raw, color):
-        bottom = self.table.verticalScrollBar()
-        follow = bottom.value() == bottom.maximum()
-        if self.table.rowCount() >= MAX_ROWS:
-            self.table.removeRow(0)
-        row = self.table.rowCount()
-        self.table.insertRow(row)
+    def record(self, t, direction, name, value, raw, color, automatic):
         stamp = time.strftime("%H:%M:%S", time.localtime(t)) + f".{int(t * 10) % 10}"
-        for column, text in enumerate((stamp, direction, name, value, raw)):
-            item = QtWidgets.QTableWidgetItem(text)
-            item.setForeground(QtGui.QColor(color if column < 4 else "#78909c"))
-            self.table.setItem(row, column, item)
+        row = (stamp, direction, name, value, raw, color, automatic)
+        self.events.append(row)
+        self.incoming.append(row)
+
+    def visible(self, rows):
+        hide = self.hide_auto.isChecked()
+        return [row for row in rows if not (hide and row[6])]
+
+    def flush(self):
+        rows, self.incoming = self.incoming, []
+        self.update_count()
+        if rows and not self.pause.isChecked():
+            self.show_rows(self.visible(rows))
+
+    def show_rows(self, rows):
+        if not rows:
+            return
+        rows = rows[-SHOWN_ROWS:]
+        bar = self.table.verticalScrollBar()
+        follow = bar.value() == bar.maximum()
+        self.table.setUpdatesEnabled(False)
+        excess = self.table.rowCount() + len(rows) - SHOWN_ROWS
+        for _ in range(max(0, excess)):
+            self.table.removeRow(0)
+        for stamp, direction, name, value, raw, color, _ in rows:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            for column, text in enumerate((stamp, direction, name, value, raw)):
+                item = QtWidgets.QTableWidgetItem(text)
+                item.setForeground(QtGui.QColor(color if column < 4 else "#78909c"))
+                self.table.setItem(row, column, item)
+        self.table.setUpdatesEnabled(True)
         if follow:
             self.table.scrollToBottom()
-        return row
 
-    def apply_filter(self, hide):
-        for row in range(self.table.rowCount()):
-            self.table.setRowHidden(row, hide and bool(
-                self.table.item(row, 0).data(QtCore.Qt.UserRole)))
+    def rebuild(self, *_):
+        self.incoming = []
+        self.table.setRowCount(0)
+        self.show_rows(self.visible(self.events))
         self.table.scrollToBottom()
 
     def clear(self):
+        self.events.clear()
+        self.incoming = []
         self.table.setRowCount(0)
         self.sent = 0
         self.update_count()
