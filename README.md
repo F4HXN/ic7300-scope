@@ -105,7 +105,7 @@ sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy python3-serial \
 ### Récupérer le projet
 
 ```bash
-git clone http://192.168.1.54:3000/polo/ic7300-scope.git
+git clone https://github.com/F4HXN/ic7300-scope.git
 cd ic7300-scope
 ./install.sh          # ajoute « IC-7300 Scope » au menu des applications
 ```
@@ -192,7 +192,7 @@ CI-V. Les interrogations automatiques (S-mètre, scope…) sont masquées par d�
 **Sur le PC distant :**
 
 ```bash
-python3 ic7300_scope.py --remote 192.168.1.37
+python3 ic7300_scope.py --remote <IP-du-PC-de-la-radio>
 ```
 
 > 🛡️ **Sécurité** : si la liaison se coupe (Wi-Fi, câble, PC planté), le

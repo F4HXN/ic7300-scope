@@ -14,6 +14,7 @@ Surveillance : le trafic CI-V est recopié sur un socket local
 fenêtre de serveur_gui.py.
 """
 import argparse
+import glob
 import ipaddress
 import json
 import os
@@ -24,8 +25,7 @@ import time
 
 import serial
 
-DEFAULT_PORT = ("/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_"
-                "Controller_IC-7300_03009829-if00-port0")
+LOCAL_NETWORKS = "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
 PTT_OFF = bytes([0xFE, 0xFE, 0x94, 0xE0, 0x1C, 0x00, 0x00, 0xFD])
 MONITOR_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"),
                             "ic7300-cat-monitor.sock")
@@ -93,6 +93,12 @@ class Monitor:
 monitor = None
 
 
+def radio_port():
+    """Port CI-V de l'IC-7300 branchée, quel que soit son numéro de série."""
+    ports = sorted(glob.glob("/dev/serial/by-id/*IC-7300*-if00-port0"))
+    return ports[0] if ports else "/dev/ttyUSB0"
+
+
 def log(message):
     print(time.strftime("%H:%M:%S"), message, flush=True)
     if monitor:
@@ -110,7 +116,7 @@ def keepalive(conn):
 def serve(conn, args):
     try:
         ser = serial.Serial(None, args.baud, timeout=0, exclusive=True)
-        ser.port = args.serial
+        ser.port = args.serial or radio_port()   # radio branchée après le démarrage
         ser.dtr = False             # au repos : USB Keying (CW) sur DTR manipulerait la radio
         ser.open()
     except serial.SerialException as e:
@@ -149,12 +155,14 @@ def main():
     global monitor
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--serial", default=DEFAULT_PORT, help="port CI-V de la radio")
+    parser.add_argument("--serial", help="port CI-V de la radio (par défaut : "
+                        "l'IC-7300 trouvée dans /dev/serial/by-id)")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--listen", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=7300)
-    parser.add_argument("--allow", default="127.0.0.0/8,192.168.1.0/24",
-                        help="réseaux autorisés, séparés par des virgules")
+    parser.add_argument("--allow", default=LOCAL_NETWORKS,
+                        help="réseaux autorisés, séparés par des virgules "
+                             "(par défaut : les réseaux locaux privés)")
     args = parser.parse_args()
     allowed = [ipaddress.ip_network(n.strip()) for n in args.allow.split(",")]
 

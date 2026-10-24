@@ -9,7 +9,7 @@ Un seul câble USB entre l'IC-7300 et le PC suffit : il porte la commande CI-V e
 | Radio | Icom IC-7300, adresse CI-V par défaut `94h` |
 | Câble | USB A vers B, branché sur la prise USB arrière de la radio |
 | PC de la radio | Ubuntu 26.04 ou 24.04, bureau GNOME, son PipeWire |
-| Réseau (pilotage à distance) | Les deux PC sur le même réseau local `192.168.1.0/24` |
+| Réseau (pilotage à distance) | Les deux PC sur le même réseau local |
 
 Deux montages sont possibles : tout sur un seul PC, ou la radio sur un PC et le pilotage depuis un autre. Les sections 2 à 6 valent pour les deux ; les sections 7 et 8 ne concernent que le pilotage à distance.
 
@@ -35,11 +35,11 @@ sudo apt install git python3-pyqt5 python3-pyqtgraph python3-numpy python3-scipy
 
 ## Récupérer le code
 
-Le code est sur le Gitea du réseau local. On le place dans `~/git`, le dossier des projets :
+Le code est sur GitHub. On le place dans `~/git`, le dossier des projets :
 
 ```bash
 mkdir -p ~/git && cd ~/git
-git clone http://192.168.1.54:3000/polo/ic7300-scope.git
+git clone https://github.com/F4HXN/ic7300-scope.git
 cd ic7300-scope
 ```
 
@@ -71,7 +71,7 @@ Le PC voit la radio comme un port série (puce CP2102) ; l'utilisateur doit êtr
    ls /dev/serial/by-id/ | grep IC-7300
    ```
 
-L'appli cherche par défaut le port de la radio actuelle, dont le nom contient son numéro de série (`IC-7300_03009829`). Avec une autre IC-7300, il faut lui donner le chemin affiché à l'étape 4 : `--port /dev/serial/by-id/<nom>`, sur `ic7300_scope.py` comme sur `cat_server.py`.
+L'appli et le serveur trouvent tout seuls l'IC-7300 dans `/dev/serial/by-id`. Si plusieurs radios sont branchées, donner le chemin affiché à l'étape 4 : `--port /dev/serial/by-id/<nom>` pour `ic7300_scope.py`, `--serial` pour `cat_server.py`.
 
 ## Son
 
@@ -105,9 +105,9 @@ Pour FT8 et FT4, l'horloge du PC doit être juste à moins d'une seconde : `time
 ## PC de la radio : IC-7300 Serveur
 
 ```
- ┌──────────── PC de la radio (192.168.1.37) ────────────┐          ┌──── PC distant ────────┐
+ ┌──────────── PC de la radio (<IP-radio>) ──────────────┐          ┌──── PC distant ────────┐
  │  IC-7300 ⇄ cat_server.py    commande CI-V, TCP 7300   │ ◀──────▶ │  ic7300_scope.py       │
- │   (USB)  ⇄ PipeWire-Pulse   son reçu/émis, TCP 4713   │  réseau  │  --remote 192.168.1.37 │
+ │   (USB)  ⇄ PipeWire-Pulse   son reçu/émis, TCP 4713   │  réseau  │  --remote <IP-radio>   │
  └───────────────────────────────────────────────────────┘          └────────────────────────┘
 ```
 
@@ -126,30 +126,34 @@ Le script :
 
 La fenêtre « IC-7300 Serveur » démarre ou arrête le serveur d'un clic, montre le PC distant connecté et liste en direct les commandes transmises à la radio.
 
-Sécurité : seules les adresses `127.0.0.0/8` et `192.168.1.0/24` peuvent piloter la radio. Si la liaison se coupe, le serveur remet la radio en réception en moins de 10 secondes. Si le pare-feu est actif (`sudo ufw status`), ouvrir les deux ports :
+Sécurité : seules les adresses des réseaux locaux privés (`10.x`, `172.16` à `172.31`, `192.168.x`) peuvent piloter la radio, jamais Internet. Si la liaison se coupe, le serveur remet la radio en réception en moins de 10 secondes.
+
+Si le pare-feu est actif (`sudo ufw status`), ouvrir les deux ports au réseau local. Remplacer `<réseau-local>` par le réseau de la maison, au format `adresse/24` : il se lit avec `ip -br addr`.
 
 ```bash
-sudo ufw allow from 192.168.1.0/24 to any port 7300,4713 proto tcp
+sudo ufw allow from <réseau-local> to any port 7300,4713 proto tcp
 ```
 
 ## PC distant
 
 Le PC distant n'a besoin ni de radio ni de serveur : les sections 2, 3 et 6 suffisent (paquets, code, `install.sh`).
 
-Pour que l'entrée du menu se connecte toujours à la radio, on passe l'adresse du PC de la radio à `install.sh` :
+`<IP-radio>` est l'adresse du PC de la radio : la fenêtre « IC-7300 Serveur » l'affiche, ou `hostname -I` sur ce PC.
+
+Pour que l'entrée du menu se connecte toujours à la radio, on passe cette adresse à `install.sh` :
 
 ```bash
 cd ~/git/ic7300-scope
-./install.sh --remote 192.168.1.37
+./install.sh --remote <IP-radio>
 ```
 
 Ou, en ligne de commande, pour une seule fois :
 
 ```bash
-python3 ic7300_scope.py --remote 192.168.1.37
+python3 ic7300_scope.py --remote <IP-radio>
 ```
 
-`192.168.1.37` est l'adresse actuelle du PC de la radio ; la fenêtre « IC-7300 Serveur » affiche celle à utiliser. L'appli crée elle-même l'entrée et la sortie son de la radio distante, et les retire à la fermeture.
+L'appli crée elle-même l'entrée et la sortie son de la radio distante, et les retire à la fermeture.
 
 ## Dépannage
 
