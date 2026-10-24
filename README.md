@@ -91,6 +91,8 @@ ni interface externe ni logiciel de pilotage à installer.
 
 ## Installation
 
+> 📘 Guide pas à pas pour un PC Ubuntu (paquets, radio, son, pilotage à distance, dépannage) : [INSTALLATION.md](INSTALLATION.md)
+
 ### Dépendances
 
 ```bash
