@@ -61,15 +61,59 @@ def adif_record(qso):
     return " ".join(out) + " <EOR>"
 
 
+HEADER = (f"Carnet IC-7300 Scope <ADIF_VER:5>3.1.4 "
+          f"<PROGRAMID:{len(AGENT)}>{AGENT} <EOH>\n")
+
+
 def save_adif(path, record):
     """Ajoute le QSO au fichier ADIF local (créé avec son en-tête)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     new = not os.path.exists(path)
     with open(path, "a") as f:
         if new:
-            f.write(f"Carnet IC-7300 Scope <ADIF_VER:5>3.1.4 "
-                    f"<PROGRAMID:{len(AGENT)}>{AGENT} <EOH>\n")
+            f.write(HEADER)
         f.write(record + "\n")
+
+
+def write_adif(path, qsos):
+    """Réécrit tout le carnet (QSO modifié ou effacé) ; l'ancien reste en .bak."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(HEADER)
+        for qso in qsos:
+            f.write(adif_record(qso) + "\n")
+    if os.path.exists(path):
+        os.replace(path, path + ".bak")
+    os.replace(tmp, path)
+
+
+def read_adif(path):
+    """QSO d'un fichier ADIF : liste de dicts (champs en minuscules)."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    head = text.upper().find("<EOH>")
+    if head >= 0:
+        text = text[head + 5:]
+    qsos, qso, pos = [], {}, 0
+    while True:
+        start = text.find("<", pos)
+        end = text.find(">", start)
+        if start < 0 or end < 0:
+            break
+        tag = text[start + 1:end].split(":")
+        name = tag[0].strip().lower()
+        if name == "eor":
+            qsos.append(qso)
+            qso = {}
+            pos = end + 1
+            continue
+        try:
+            size = int(tag[1])
+        except (IndexError, ValueError):
+            size = 0
+        qso[name] = text[end + 1:end + 1 + size]
+        pos = end + 1 + size
+    return qsos
 
 
 def _post(url, data, content_type):
