@@ -41,6 +41,7 @@
 | 37 | 24/10/2026 | `109268e` | CW émise en rouge lettre par lettre, horloge UTC et locale, fréquence de la souris dans le waterfall |
 | 38 | 24/10/2026 | `55024a3` | Double-clic sur un indicatif du texte décodé : il passe en correspondant |
 | 39 | 24/10/2026 | `7c31d4a` | Prénom depuis qrz.com, bouton « Noter le QSO » (Wavelog, carnet qrz.com, copie ADIF), messages CW modifiables |
+| 40 | 24/10/2026 | `40f1084` | Fenêtre « Carnet… » : liste des QSO notés, modifier ou effacer un QSO (copie locale, sauvegarde .bak) |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
