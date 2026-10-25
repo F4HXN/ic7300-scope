@@ -235,13 +235,14 @@ TX_TEXT_COLOR = "#ef5350"       # texte émis en CW, parmi le texte décodé
 CW_DIRECT_IDLE = 3.0            # s sans frappe en direct : fin de la ligne émise
 CW_ECHO_DELAY = 0.15            # s entre l'envoi CI-V et la première lettre manipulée
 SLIDER_WIDTH = 150              # px : curseurs de la grille du son
-SOUND_GAPS = (4, 8, 12, 16)     # colonnes vides entre les groupes de la grille
-SOUND_COLUMNS = 20              # colonne élastique, à droite de la grille
+SOUND_GAPS = (4, 8, 12, 16, 20)  # colonnes vides entre les groupes de la grille
+SOUND_COLUMNS = 22              # colonne élastique, à droite de la grille
 # repères de l'IC-7300 pour les mesures en émission
 PO_POINTS = [(0, 0), (143, 50), (213, 100), (255, 120)]           # % de puissance
 SWR_POINTS = [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (255, 6.0)]
 COMP_POINTS = [(0, 0.0), (130, 15.0), (241, 30.0), (255, 32.0)]     # dB
 ID_POINTS = [(0, 0.0), (97, 10.0), (146, 15.0), (241, 25.0)]      # A
+VD_POINTS = [(0, 0.0), (13, 10.0), (241, 16.0)]                   # V
 ALC_ZONE = 120                  # au-delà, l'ALC sort de sa zone sur la radio
 MIN_FREQ = 30_000               # couverture de réception de l'IC-7300
 MAX_FREQ = 74_800_000
@@ -463,6 +464,20 @@ def list_outputs(exclude):
     return outputs
 
 
+def sink_hw_volume(sink):
+    """Vrai si la sortie règle son volume dans la carte son : son retour
+    (.monitor) est alors pris avant le volume, sinon après."""
+    try:
+        out = subprocess.run(["pactl", "list", "sinks"], capture_output=True, text=True,
+                             timeout=2, env={**os.environ, "LC_ALL": "C"}).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    for block in out.split("\nSink #"):
+        if re.search(rf"^\s*Name: {re.escape(sink)}$", block, re.M):
+            return "HW_VOLUME_CTRL" in block
+    return False
+
+
 def sink_volume(sink):
     try:
         out = subprocess.run(["pactl", "get-sink-volume", sink],
@@ -587,6 +602,41 @@ class AudioReader(QtCore.QThread):
         self.wait(2000)
 
 
+class InputLevel(QtCore.QThread):
+    """Niveau d'une entrée son (micro de l'émission), en dBFS, 10 fois par seconde."""
+    level = QtCore.pyqtSignal(float)
+
+    def __init__(self, source):
+        super().__init__()
+        self.source = source
+        self.proc = None
+        self._running = True
+
+    def run(self):
+        rate = 8000
+        try:
+            self.proc = subprocess.Popen(
+                ["parec", "--raw", f"--device={self.source}", "--format=s16le",
+                 f"--rate={rate}", "--channels=1", "--latency-msec=50",
+                 "--client-name=IC-7300 Scope niveau TX"],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        except FileNotFoundError:
+            return
+        nbytes = rate // 10 * 2
+        while self._running:
+            data = self.proc.stdout.read(nbytes)
+            if len(data) < nbytes:
+                break
+            x = np.frombuffer(data, "<i2").astype(np.float32) / 32768
+            self.level.emit(float(20 * np.log10(np.sqrt(np.mean(x * x)) + 1e-10)))
+
+    def stop(self):
+        self._running = False
+        if self.proc:
+            self.proc.terminate()
+        self.wait(1000)
+
+
 class CivReader(QtCore.QThread):
     """Interroge la radio en CI-V : S-mètre, fréquence et mode."""
     meter = QtCore.pyqtSignal(int)
@@ -595,7 +645,8 @@ class CivReader(QtCore.QThread):
     other_frequency = QtCore.pyqtSignal(int)     # VFO non sélectionné
     other_mode = QtCore.pyqtSignal(str)
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
-    level = QtCore.pyqtSignal(int, int)         # réglage 0x14 (RF 0x02, SQL 0x03), 0 à 255
+    level = QtCore.pyqtSignal(int, int)         # réglage 0x14 (RF 0x02, SQL 0x03, COMP 0x0E), 0 à 255
+    compressor = QtCore.pyqtSignal(bool)        # compresseur de parole en service
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
     filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
     filter_width = QtCore.pyqtSignal(int)       # largeur du filtre, valeur 0x1A 0x03
@@ -606,6 +657,7 @@ class CivReader(QtCore.QThread):
     usb_mod = QtCore.pyqtSignal(int)            # menu USB MOD Level, 0 à 255
     comp = QtCore.pyqtSignal(int)               # compression, 0 à 255
     drain = QtCore.pyqtSignal(int)              # courant de l'ampli (Id), 0 à 255
+    voltage = QtCore.pyqtSignal(int)            # tension d'alimentation (Vd), 0 à 255
     scope = QtCore.pyqtSignal(object, int, int) # balayage, bords bas/haut (Hz)
     span = QtCore.pyqtSignal(int)               # demi-largeur du scope (Hz)
     powered = QtCore.pyqtSignal(bool)           # la radio répond (en marche)
@@ -706,7 +758,7 @@ class CivReader(QtCore.QThread):
         self._pending_af = level
 
     def set_level(self, sub, level):
-        """Réglage 0x14 de la radio : 0x02 gain RF, 0x03 squelch."""
+        """Réglage 0x14 de la radio : 0x02 gain RF, 0x03 squelch, 0x0E compresseur."""
         self._pending_levels[sub] = level
 
     def set_span(self, hz):
@@ -772,6 +824,10 @@ class CivReader(QtCore.QThread):
             self._hand_stop.clear()
             self._hand_thread = threading.Thread(target=self._hand_key, daemon=True)
             self._hand_thread.start()
+
+    def set_compressor(self, on):
+        """Compresseur de parole (BLU) en service ou non."""
+        self._commands.put((0x16, 0x44, 0x01 if on else 0x00))
 
     def _break_in_for_cw(self):
         if self._break_in == 0x00:
@@ -995,14 +1051,15 @@ class CivReader(QtCore.QThread):
                 queries = [(0x03,)]
             elif self._ptt or self._tx:     # en émission : puissance, ROS, ALC
                 queries = [(0x1C, 0x00), (0x15, 0x11), (0x15, 0x12), (0x15, 0x13),
-                           (0x15, 0x14), (0x15, 0x16)]
+                           (0x15, 0x14), (0x15, 0x15), (0x15, 0x16)]
                 if n % 10 == 0:
                     queries += [(0x03,), (0x04,), (0x1A, 0x06)]
             elif n % 10 == 0:
                 queries = [(0x03,), (0x04,), (0x1A, 0x06), (0x1A, 0x03), (0x25, 0x01), (0x26, 0x01),
                            (0x14, 0x01), (0x14, 0x02), (0x14, 0x03), (0x14, 0x0A), (0x1C, 0x00),
                            (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65),
-                           (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47), (0x15, 0x01)]
+                           (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47), (0x15, 0x01),
+                           (0x16, 0x44), (0x14, 0x0E), (0x15, 0x15)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
@@ -1173,9 +1230,13 @@ class CivReader(QtCore.QThread):
             self.comp.emit(bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x16:
             self.drain.emit(bcd_be(data[1:]))
+        elif cmd == 0x15 and len(data) == 3 and data[0] == 0x15:
+            self.voltage.emit(bcd_be(data[1:]))
         elif cmd == 0x14 and len(data) == 3 and data[0] == 0x01:
             self.af_gain.emit(bcd_be(data[1:]))
-        elif cmd == 0x14 and len(data) == 3 and data[0] in (0x02, 0x03):
+        elif cmd == 0x16 and len(data) == 2 and data[0] == 0x44:
+            self.compressor.emit(data[1] == 0x01)
+        elif cmd == 0x14 and len(data) == 3 and data[0] in (0x02, 0x03, 0x0E):
             self.level.emit(data[0], bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x02:
             self.meter.emit(bcd_be(data[1:]))
@@ -1323,15 +1384,18 @@ class TuningKnob(QtWidgets.QWidget):
 
 
 class BarGraph(QtWidgets.QWidget):
-    """Bargraph à segments avec mémoire de crête."""
+    """Bargraph à segments avec mémoire de crête.
 
-    def __init__(self, minimum, maximum, ticks, red_from, segments=48):
+    Les segments ont la même taille dans tous les bargraphs : leur nombre
+    dépend de la largeur."""
+    SEGMENT_PX = 14
+
+    def __init__(self, minimum, maximum, ticks, red_from):
         super().__init__()
         self.minimum = minimum
         self.maximum = maximum
         self.ticks = ticks
         self.red_from = red_from
-        self.segments = segments
         self.value = minimum
         self.peak = minimum
         self.peak_time = 0.0
@@ -1361,11 +1425,12 @@ class BarGraph(QtWidgets.QWidget):
         bar_h = h - 18
         inner_w = w - 2 * margin
         p.fillRect(self.rect(), QtGui.QColor("#0b0f13"))
-        seg_w = inner_w / self.segments
+        segments = max(4, round(inner_w / self.SEGMENT_PX))
+        seg_w = inner_w / segments
         lit_fraction = self._fraction(self.value)
         green, red = QtGui.QColor("#3ddc84"), QtGui.QColor("#ff5252")
-        for i in range(self.segments):
-            centre = (i + 0.5) / self.segments
+        for i in range(segments):
+            centre = (i + 0.5) / segments
             seg_value = self.minimum + centre * (self.maximum - self.minimum)
             color = red if seg_value >= self.red_from else green
             if centre > lit_fraction:
@@ -1561,44 +1626,70 @@ class MainWindow(QtWidgets.QMainWindow):
         level_ticks = [(v, f"{v}") for v in range(-60, 1, 10)]
         self.level_meter = BarGraph(-60, 0, level_ticks, red_from=-6)
         self.level_value = QtWidgets.QLabel("")
-        for label in (self.s_value, self.level_value):
+        # entrée de l'émission : micro (en continu, pour le régler avant
+        # d'émettre) ou, avec un fichier, le son qui part vers la radio
+        self.tx_in_meter = BarGraph(-60, 0, level_ticks, red_from=-6)
+        self.tx_in_meter.setToolTip("Niveau envoyé à la radio, Niveau PC compris (micro, "
+                                    "ou fichier pendant l'émission). Rester sous le rouge.")
+        self.tx_in_value = QtWidgets.QLabel("")
+        self.tx_in_reader = None
+        # à côté : la puissance HF qui sort de la radio en émission (Po)
+        po_ticks = [(v, f"{v}") for v in (0, 25, 50, 75, 100)]
+        self.po_meter = BarGraph(0, 120, po_ticks, red_from=100)
+        self.po_meter.setToolTip("Puissance de sortie de la radio en émission, "
+                                 "en W (100 W pour la puissance maximale)")
+        self.po_value = QtWidgets.QLabel("")
+        # ALC à côté de l'audio reçu, en émission
+        alc_ticks = [(v, f"{v}") for v in (0, 50, 100, 150)]
+        self.alc_meter = BarGraph(0, 150, alc_ticks, red_from=100)
+        self.alc_meter.setToolTip("ALC en % de sa zone : rester sous 100")
+        self.alc_value = QtWidgets.QLabel("")
+        for label in (self.s_value, self.level_value, self.tx_in_value, self.po_value,
+                      self.alc_value):
             label.setMinimumWidth(90)
             label.setStyleSheet("font: bold 14pt monospace;")
-        bars.addWidget(QtWidgets.QLabel("S-mètre"), 0, 0)
-        bars.addWidget(self.s_meter, 0, 1)
-        bars.addWidget(self.s_value, 0, 2)
-        bars.addWidget(QtWidgets.QLabel("Audio dBFS"), 1, 0)
-        bars.addWidget(self.level_meter, 1, 1)
-        bars.addWidget(self.level_value, 1, 2)
-        left.addLayout(bars)
-        # Bargraphs d'émission
-        tx_bars = QtWidgets.QGridLayout()
         swr_ticks = [(raw, f"{swr:g}") for raw, swr in SWR_POINTS[:-1]] + [(255, "∞")]
-        self.swr_meter = BarGraph(0, 255, swr_ticks, red_from=80, segments=24)
+        self.swr_meter = BarGraph(0, 255, swr_ticks, red_from=80)
         comp_ticks = [(v, f"{v}") for v in (0, 10, 20, 30)]
-        self.comp_meter = BarGraph(0, 30, comp_ticks, red_from=20, segments=24)
-        alc_ticks = [(v, f"{v}") for v in (0, 50, 100, 150)]
-        self.alc_meter = BarGraph(0, 150, alc_ticks, red_from=100, segments=24)
-        self.alc_meter.setToolTip("ALC en % de sa zone : rester sous 100")
+        self.comp_meter = BarGraph(0, 30, comp_ticks, red_from=20)
+        vd_ticks = [(v, f"{v}") for v in (10, 12, 14, 16)]
+        self.vd_meter = BarGraph(10, 16, vd_ticks, red_from=15)
+        self.vd_meter.setToolTip("Tension d'alimentation de la radio (Vd) : 13,8 V "
+                                 "nominal ; si elle chute fort en émission, "
+                                 "l'alimentation ou ses câbles sont trop justes")
         id_ticks = [(v, f"{v}") for v in (0, 5, 10, 15, 20, 25)]
-        self.id_meter = BarGraph(0, 25, id_ticks, red_from=22, segments=24)
+        self.id_meter = BarGraph(0, 25, id_ticks, red_from=22)
         self.id_meter.setToolTip("Courant consommé par l'ampli (Id)")
         self.swr_value = QtWidgets.QLabel("")
         self.comp_value = QtWidgets.QLabel("")
-        self.alc_value = QtWidgets.QLabel("")
+        self.vd_value = QtWidgets.QLabel("")
         self.id_value = QtWidgets.QLabel("")
-        for i, (name, meter, value) in enumerate(
+        # une seule grille, alignée : nom, barre, valeur, deux fois par ligne ;
+        # le S-mètre prend toute la largeur
+        bars.addWidget(QtWidgets.QLabel("S-mètre"), 0, 0)
+        bars.addWidget(self.s_meter, 0, 1, 1, 4)
+        bars.addWidget(self.s_value, 0, 5)
+        for row, pair in enumerate((
+                (("Audio dBFS", self.level_meter, self.level_value),
+                 ("ALC %", self.alc_meter, self.alc_value)),
+                (("Entrée TX", self.tx_in_meter, self.tx_in_value),
+                 ("Sortie TX", self.po_meter, self.po_value)),
                 (("ROS", self.swr_meter, self.swr_value),
-                 ("COMP dB", self.comp_meter, self.comp_value),
-                 ("ALC %", self.alc_meter, self.alc_value),
-                 ("Id", self.id_meter, self.id_value))):
-            value.setMinimumWidth(60)
-            value.setStyleSheet("font: bold 12pt monospace;")
-            row, col = divmod(i, 2)
-            tx_bars.addWidget(QtWidgets.QLabel(name), row, 3 * col)
-            tx_bars.addWidget(meter, row, 3 * col + 1)
-            tx_bars.addWidget(value, row, 3 * col + 2)
-        left.addLayout(tx_bars)
+                 ("COMP dB", self.comp_meter, self.comp_value)),
+                (("Vd", self.vd_meter, self.vd_value),
+                 ("Id", self.id_meter, self.id_value))), start=1):
+            for col, (name, meter, value) in zip((0, 3), pair):
+                # même largeur pour les deux barres de chaque ligne
+                meter.setSizePolicy(QtWidgets.QSizePolicy.Ignored,
+                                    QtWidgets.QSizePolicy.Fixed)
+                value.setMinimumWidth(90)
+                value.setStyleSheet("font: bold 14pt monospace;")
+                bars.addWidget(QtWidgets.QLabel(name), row, col)
+                bars.addWidget(meter, row, col + 1)
+                bars.addWidget(value, row, col + 2)
+        bars.setColumnStretch(1, 1)
+        bars.setColumnStretch(4, 1)
+        left.addLayout(bars)
         left.addStretch()
 
         # VFO
@@ -1633,6 +1724,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.atu_button = QtWidgets.QPushButton("ATU")
         self.atu_button.setCheckable(True)
         self.atu_button.setToolTip("Boîte d'accord interne en service")
+        # en vert quand la boîte d'accord est en service, comme ⏻ ON
+        self.atu_button.setStyleSheet("QPushButton:checked { background: #2e7d32; "
+                                      "color: white; font-weight: bold; }")
         self.atu_button.clicked.connect(self.on_atu)
         vfo.addWidget(self.tune_button, 4, 0, 1, 2)
         vfo.addWidget(self.atu_button, 4, 2, 1, 2)
@@ -2003,7 +2097,30 @@ class MainWindow(QtWidgets.QMainWindow):
         add_slider(sound, 1, 5, "Niveau PC", self.tx_level, self.tx_level_label)
         add_slider(sound, 1, 9, "Puissance", self.power_slider, self.power_label)
         add_slider(sound, 1, 13, "Réglage ALC", self.alc_slider, self.alc_slider_label)
-        sound.addWidget(self.tx_meter_label, 1, 17, 1, 3)
+        # compresseur de parole : bouton en service (vert) et niveau 0 à 10,
+        # sous SQL ; il ne joue qu'en BLU, à la voix
+        self.comp_button = QtWidgets.QPushButton("COMP")
+        self.comp_button.setCheckable(True)
+        self.comp_button.setEnabled(False)      # activé quand la radio répond
+        self.comp_button.setToolTip("Compresseur de parole de la radio (BLU) : plus de "
+                                    "puissance moyenne. Le bargraph COMP montre son effet "
+                                    "en émission, viser 10 à 20 dB.")
+        self.comp_button.setStyleSheet("QPushButton:checked { background: #2e7d32; "
+                                       "color: white; font-weight: bold; }")
+        self.comp_button.clicked.connect(self.on_comp_button)
+        slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        slider.setRange(0, 255)
+        slider.setFixedWidth(SLIDER_WIDTH)
+        slider.setToolTip("Niveau du compresseur (menu COMP de la radio, 0 à 10)")
+        slider.setEnabled(False)
+        label = QtWidgets.QLabel()
+        label.setMinimumWidth(45)
+        slider.valueChanged.connect(lambda value: self.on_level_slider(0x0E, value))
+        self.level_sliders[0x0E] = (slider, label)
+        sound.addWidget(self.comp_button, 1, 17)
+        sound.addWidget(slider, 1, 18)
+        sound.addWidget(label, 1, 19)
+        sound.addWidget(self.tx_meter_label, 1, 21)
         # sous Enreg./Dossier, dans la colonne des bandes
         bands.addWidget(self.ptt_button, memory_row + 4, 0, 1, 2)
         bands.setRowStretch(memory_row + 5, 1)
@@ -2218,6 +2335,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.other_mode.connect(self.on_other_mode)
             self.civ.af_gain.connect(self.on_af_gain)
             self.civ.level.connect(self.on_level)
+            self.civ.compressor.connect(self.on_compressor)
             self.civ.tuner.connect(self.on_tuner)
             self.civ.power.connect(self.on_power)
             self.civ.key_speed.connect(self.on_key_speed)
@@ -2226,6 +2344,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.usb_mod.connect(self.on_usb_mod)
             self.civ.comp.connect(self.on_comp)
             self.civ.drain.connect(self.on_drain)
+            self.civ.voltage.connect(self.on_voltage)
             self.civ.scope.connect(self.on_scope)
             self.civ.span.connect(self.on_span)
             self.civ.powered.connect(self.on_powered)
@@ -3078,6 +3197,28 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_file_button.setVisible(is_file)
         if is_file and self.tx_file:
             self.tx_file_button.setText(os.path.basename(self.tx_file))
+        # bargraph Entrée TX : le micro, ou ce qui part vers la radio
+        if self.tx_in_reader:
+            self.tx_in_reader.stop()
+        self.tx_in_meter.setValue(self.tx_in_meter.minimum)
+        self.tx_in_value.setText("")
+        source = self.radio_sink + ".monitor" if is_file else self.tx_source.currentData()
+        # le Niveau PC s'ajoute au micro ; au retour de la sortie, seulement
+        # s'il est réglé dans la carte son (sinon le retour l'a déjà)
+        self.tx_in_gain = not is_file or sink_hw_volume(self.radio_sink)
+        self.tx_in_reader = InputLevel(source) if source else None
+        if self.tx_in_reader:
+            self.tx_in_reader.level.connect(self.on_tx_in_level)
+            self.tx_in_reader.start()
+
+    def on_tx_in_level(self, db):
+        # ce qui arrive à la radio : après le Niveau PC, volume de PipeWire en
+        # échelle cubique (50 % = -18 dB)
+        percent = self.tx_level.value()
+        if self.tx_in_gain:
+            db += 60 * math.log10(percent / 100) if percent else -200
+        self.tx_in_meter.setValue(db)
+        self.tx_in_value.setText(f"{max(db, -99):5.1f}")    # silence : pas de -200
 
     def choose_tx_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -3350,7 +3491,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tx_timer.stop()
         self._set_ptt_button(False)
         self.tx_meter_label.setText("")
-        for meter, value in ((self.swr_meter, self.swr_value),
+        for meter, value in ((self.po_meter, self.po_value),
+                             (self.swr_meter, self.swr_value),
                              (self.comp_meter, self.comp_value),
                              (self.alc_meter, self.alc_value),
                              (self.id_meter, self.id_value)):
@@ -3399,12 +3541,20 @@ class MainWindow(QtWidgets.QMainWindow):
         percent = alc * 100 / ALC_ZONE
         self.alc_meter.setValue(percent)
         self.alc_value.setText(f"{percent:.0f}")
-        self.tx_meter_label.setText(f"Po {piecewise(po, PO_POINTS):3.0f} %")
+        watts = piecewise(po, PO_POINTS)    # % de 100 W, donc des W
+        self.tx_meter_label.setText(f"Po {watts:3.0f} %")
+        self.po_meter.setValue(watts)
+        self.po_value.setText(f"{watts:3.0f} W")
 
     def on_drain(self, raw):
         amps = piecewise(raw, ID_POINTS)
         self.id_meter.setValue(amps)
         self.id_value.setText(f"{amps:.1f} A")
+
+    def on_voltage(self, raw):
+        volts = piecewise(raw, VD_POINTS)
+        self.vd_meter.setValue(volts)
+        self.vd_value.setText(f"{volts:.1f} V")
 
     def on_comp(self, raw):
         db = piecewise(raw, COMP_POINTS)
@@ -3502,12 +3652,20 @@ class MainWindow(QtWidgets.QMainWindow):
             slider.blockSignals(True)
             slider.setValue(level)
             slider.blockSignals(False)
-        label.setText(f"{round(slider.value() * 100 / 255)} %")
+        label.setText(level_text(sub, slider.value()))
 
     def on_level_slider(self, sub, level):
-        self.level_sliders[sub][1].setText(f"{round(level * 100 / 255)} %")
+        self.level_sliders[sub][1].setText(level_text(sub, level))
         if self.civ:
             self.civ.set_level(sub, level)
+
+    def on_compressor(self, on):
+        self.comp_button.setEnabled(True)
+        self.comp_button.setChecked(on)
+
+    def on_comp_button(self, on):
+        if self.civ:
+            self.civ.set_compressor(on)
 
     def on_meter(self, raw):
         self.s_meter.setValue(raw)
@@ -3792,6 +3950,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.text_window:
             self.text_window.close()
         self.audio.stop()
+        if self.tx_in_reader:
+            self.tx_in_reader.stop()
         if self.civ:
             self.civ.stop()
         # écoute rendue non muette, sinon PipeWire la garde coupée au lancement suivant
@@ -4130,6 +4290,13 @@ class CallsignClick(QtCore.QObject):
                 self.callback(call)
                 return True
         return False
+
+
+def level_text(sub, level):
+    """Réglage 0x14 affiché : le compresseur de 0 à 10 comme sur la radio, le reste en %."""
+    if sub == 0x0E:
+        return f"{round(level * 10 / 255)}"
+    return f"{round(level * 100 / 255)} %"
 
 
 def add_slider(grid, row, col, name, slider, value):
