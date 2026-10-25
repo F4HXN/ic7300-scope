@@ -79,6 +79,15 @@ RTTY_TX_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME")
 MACROS_FILES = {kind: os.path.join(os.path.dirname(STATE_FILE), f"messages-{kind}.json")
                 for kind in ("cw", "rtty")}
 MEMORY_DUMP_FILE = os.path.join(os.path.dirname(STATE_FILE), "memoires-radio-brut.txt")
+# presets du PC : mode, filtre, largeur, puissance, USB MOD Level, décodeur
+PRESETS_FILE = os.path.join(os.path.dirname(STATE_FILE), "presets.json")
+# presets de départ : seuls le mode, le filtre et le décodeur changent
+DEFAULT_PRESETS = [
+    {"name": "FT8", "mode": "USB-D", "filter": 1, "decoder": "ft8"},
+    {"name": "FT4", "mode": "USB-D", "filter": 1, "decoder": "ft4"},
+    {"name": "RTTY", "mode": "USB-D", "filter": 2, "decoder": "rtty"},
+    {"name": "CW", "mode": "CW", "filter": 2, "decoder": "cw"},
+]
 # champs de « Ma station… » : clé, libellé, valeur de départ
 STATION_FIELDS = [("name", "Prénom", "JEAN-PAUL"),
                   ("qth", "QTH", "PUGET-THENIERS"),
@@ -687,7 +696,10 @@ class CivReader(QtCore.QThread):
         """Appelable depuis l'interface : seule la dernière valeur est envoyée."""
         self._pending_freq = hz
 
-    def set_mode(self, name):
+    def set_mode(self, name, filt=None):
+        """Mode, et filtre FIL1 à FIL3 envoyé avec lui s'il est donné."""
+        if filt:
+            self._filter = filt
         self._pending_mode = name
 
     def set_af_gain(self, level):
@@ -1667,6 +1679,17 @@ class MainWindow(QtWidgets.QMainWindow):
                                "dans une fenêtre à part")
         sstv_button.clicked.connect(self.open_sstv)
         bands.addWidget(sstv_button, memory_row + 1, 0, 1, 2)
+        # presets du PC : mode, filtre, puissance… d'un clic
+        self.preset_combo = QtWidgets.QComboBox()
+        self.preset_combo.setToolTip("Règle la radio d'un clic : mode, filtre, largeur, "
+                                     "puissance, USB MOD Level et décodeur")
+        self.preset_combo.activated.connect(self.on_preset)
+        try:
+            with open(PRESETS_FILE) as f:
+                self.presets = [p for p in json.load(f) if p.get("name")]
+        except (OSError, ValueError, TypeError, AttributeError):
+            self.presets = [dict(p) for p in DEFAULT_PRESETS]
+        bands.addWidget(self.preset_combo, memory_row + 2, 0, 1, 2)
 
         header = QtWidgets.QHBoxLayout()
         header.addLayout(left, stretch=1)
@@ -1865,6 +1888,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_combo.addItem("RTTY 50 météo", "rtty50")
         self.decoder_combo.addItem("FT8", "ft8")
         self.decoder_combo.addItem("FT4", "ft4")
+        self._build_presets()               # les bulles des presets nomment le décodeur
         self.decoder_auto = QtWidgets.QCheckBox("Calage auto")
         self.decoder_auto.setChecked(True)
         self.rtty_invert = QtWidgets.QCheckBox("Inverser")
@@ -1875,10 +1899,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_info = QtWidgets.QLabel("")
         self.decoder_info.setStyleSheet("font: 11pt monospace;")
         # mode à prendre pour émettre : CW ou CW-R pour la CW, mode data
-        # (AFSK) pour le RTTY 45
+        # (AFSK) pour le RTTY 45, USB-D pour FT8 et FT4
         self.mode_hint = QtWidgets.QLabel()
         self.mode_hint.setStyleSheet("font: italic 11pt; color: #90a4ae;")
         self.mode_hint.setVisible(False)
+        self.mode_hint.setToolTip("Clic sur un mode : la radio y passe")
+        self.mode_hint.linkActivated.connect(self.on_mode_hint)
         decoder_clear = QtWidgets.QPushButton("Effacer")
         decoder_row.addWidget(QtWidgets.QLabel("Décodeur"))
         decoder_row.addWidget(self.decoder_combo)
@@ -1904,8 +1930,8 @@ class MainWindow(QtWidgets.QMainWindow):
         record_folder.setToolTip("Ouvrir le dossier des enregistrements")
         record_folder.clicked.connect(self.open_record_folder)
         # sous SSTV, dans la colonne des bandes
-        bands.addWidget(self.record_button, memory_row + 2, 0)
-        bands.addWidget(record_folder, memory_row + 2, 1)
+        bands.addWidget(self.record_button, memory_row + 3, 0)
+        bands.addWidget(record_folder, memory_row + 3, 1)
         self.record_timer = QtCore.QTimer(self)
         self.record_timer.setInterval(500)
         self.record_timer.timeout.connect(self.update_record_label)
@@ -1979,8 +2005,8 @@ class MainWindow(QtWidgets.QMainWindow):
         add_slider(sound, 1, 13, "Réglage ALC", self.alc_slider, self.alc_slider_label)
         sound.addWidget(self.tx_meter_label, 1, 17, 1, 3)
         # sous Enreg./Dossier, dans la colonne des bandes
-        bands.addWidget(self.ptt_button, memory_row + 3, 0, 1, 2)
-        bands.setRowStretch(memory_row + 4, 1)
+        bands.addWidget(self.ptt_button, memory_row + 4, 0, 1, 2)
+        bands.setRowStretch(memory_row + 5, 1)
         self._set_ptt_button(False)
 
         # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
@@ -2529,12 +2555,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cw_enable(getattr(self, "civ", None) is not None and (cw or rtty))
         self.tx_text_label.setText("RTTY" if rtty else "CW")
         # mode de la radio qu'il faut pour répondre avec ce décodeur
-        hint = {"rtty": (not self.mode_combo.currentText().endswith("-D"),
-                         "passer en USB-D ou LSB-D"),
-                "cw": (not cw, "passer en CW ou CW-R")}.get(self.decoder_combo.currentData())
+        # (FT8 et FT4 : toujours en USB, en mode data)
+        ft = (self.mode_combo.currentText() != "USB-D", ("USB-D",))
+        hint = {"rtty": (not self.mode_combo.currentText().endswith("-D"), ("USB-D", "LSB-D")),
+                "cw": (not cw, ("CW", "CW-R")),
+                "ft8": ft, "ft4": ft}.get(self.decoder_combo.currentData())
         self.mode_hint.setVisible(bool(hint and hint[0]))
         if hint:
-            self.mode_hint.setText(hint[1])
+            # chaque mode est un lien : un clic y met la radio
+            links = " ou ".join(f'<a href="{m}" style="color: #4fc3f7;">{m}</a>'
+                                for m in hint[1])
+            self.mode_hint.setText(f"passer en {links}")
         self.cw_text.setPlaceholderText(
             "Texte à émettre en RTTY sur les tonalités du décodeur, Entrée pour envoyer"
             if rtty else "Texte à émettre en CW, Entrée pour envoyer "
@@ -2548,6 +2579,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._build_cw_macros()
             self.edit_macros_button.setToolTip(
                 f"Modifier les messages {kind.upper()} pré-enregistrés")
+
+    def on_mode_hint(self, mode):
+        """Lien de la ligne Décodeur : la radio passe dans le mode pour émettre."""
+        if not self.civ or self.tx_active:
+            return
+        self.mode_combo.setCurrentText(mode)
+        self.on_mode_selected(mode)
 
     def on_key_speed(self, raw):
         self.cw_speed.setEnabled(True)
@@ -3108,6 +3146,131 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tune_to(hz)
         return True
 
+    def _build_presets(self):
+        combo = self.preset_combo
+        combo.clear()
+        combo.addItem("Presets…", None)
+        for i, preset in enumerate(self.presets):
+            combo.addItem(preset["name"], i)
+            combo.setItemData(combo.count() - 1, self._preset_text(preset),
+                              QtCore.Qt.ToolTipRole)
+        combo.insertSeparator(combo.count())
+        combo.addItem("Enregistrer le réglage actuel…", "save")
+        combo.addItem("Supprimer un preset…", "delete")
+
+    def _preset_text(self, preset):
+        parts = [preset.get("mode", "")]
+        if preset.get("filter"):
+            parts.append(f"FIL{preset['filter']}")
+        hz = preset.get("width") is not None and width_hz(
+            base_mode(preset.get("mode", "")), preset["width"])
+        if hz:
+            parts.append(width_text(hz))
+        if preset.get("power") is not None:
+            parts.append(f"{preset['power']} W")
+        if preset.get("usb_mod") is not None:
+            parts.append(f"USB MOD {preset['usb_mod']} %")
+        if "decoder" in preset:
+            index = self.decoder_combo.findData(preset["decoder"]) if preset["decoder"] else 0
+            parts.append(f"décodeur {self.decoder_combo.itemText(max(index, 0))}")
+        return " · ".join(p for p in parts if p)
+
+    def _save_presets(self):
+        try:
+            os.makedirs(os.path.dirname(PRESETS_FILE), exist_ok=True)
+            with open(PRESETS_FILE, "w") as f:
+                json.dump(self.presets, f, ensure_ascii=False, indent=1)
+        except OSError as e:
+            self.statusBar().showMessage(f"Presets non enregistrés : {e}")
+        self._build_presets()
+
+    def on_preset(self, index):
+        data = self.preset_combo.itemData(index)
+        self.preset_combo.setCurrentIndex(0)
+        if data == "save":
+            self.save_preset()
+        elif data == "delete":
+            self.delete_preset()
+        elif data is not None:
+            self.apply_preset(self.presets[data])
+
+    def apply_preset(self, preset):
+        """Règle la radio et le décodeur ; un réglage absent du preset ne change pas."""
+        if self.tx_active:
+            self.statusBar().showMessage("Preset : attendre la fin de l'émission")
+            return
+        mode = preset.get("mode")
+        if mode not in MODE_NAMES:
+            mode = self.mode_combo.currentText()
+        filt = preset.get("filter")
+        self.mode_combo.setCurrentText(mode)
+        if filt in (1, 2, 3):
+            self.on_filter(filt)
+        else:
+            filt = None
+        if self.civ:
+            self.civ.set_mode(mode, filt)   # le filtre part avec le mode
+        width = preset.get("width")
+        if width is not None and base_mode(mode) != "FM":
+            self.width_slider.blockSignals(True)
+            self.width_slider.setMaximum(49 if base_mode(mode) == "AM" else 40)
+            self.width_slider.setValue(width)
+            self.width_slider.blockSignals(False)
+            self.on_width_slider(width)
+        for key, slider, slot in (("power", self.power_slider, self.on_power_slider),
+                                  ("usb_mod", self.alc_slider, self.on_alc_slider)):
+            if preset.get(key) is not None:
+                slider.blockSignals(True)
+                slider.setValue(preset[key])
+                slider.blockSignals(False)
+                slot(slider.value())
+        if "decoder" in preset:
+            index = self.decoder_combo.findData(preset["decoder"]) if preset["decoder"] else 0
+            self.decoder_combo.setCurrentIndex(max(index, 0))
+        self._update_tx_text()
+        self._filter_tooltips()
+        self._update_markers()
+        self.statusBar().showMessage(f"Preset {preset['name']} : {self._preset_text(preset)}")
+
+    def save_preset(self):
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Enregistrer un preset",
+            "Nom du preset (un nom déjà pris est remplacé) :")
+        name = name.strip()
+        if not ok or not name:
+            return
+        preset = {"name": name, "mode": self.mode_combo.currentText()}
+        if self.filter_num:
+            preset["filter"] = self.filter_num
+        if self.width_index is not None:
+            preset["width"] = self.width_index
+        # puissance et USB MOD seulement si la radio les a donnés
+        if self.power_slider.isEnabled():
+            preset["power"] = self.power_slider.value()
+        if self.alc_slider.isEnabled():
+            preset["usb_mod"] = self.alc_slider.value()
+        preset["decoder"] = self.decoder_combo.currentData()
+        for i, old in enumerate(self.presets):
+            if old["name"] == name:
+                self.presets[i] = preset
+                break
+        else:
+            self.presets.append(preset)
+        self._save_presets()
+        self.statusBar().showMessage(f"Preset {name} enregistré : {self._preset_text(preset)}")
+
+    def delete_preset(self):
+        names = [p["name"] for p in self.presets]
+        if not names:
+            self.statusBar().showMessage("Aucun preset à supprimer")
+            return
+        name, ok = QtWidgets.QInputDialog.getItem(
+            self, "Supprimer un preset", "Preset à supprimer :", names, 0, False)
+        if ok:
+            self.presets = [p for p in self.presets if p["name"] != name]
+            self._save_presets()
+            self.statusBar().showMessage(f"Preset {name} supprimé")
+
     def on_memory_channel(self, channel, content):
         """Un canal de la radio vient d'être lu (au démarrage ou après écriture)."""
         # réponses brutes gardées pour le diagnostic du format des mémoires
@@ -3466,8 +3629,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if decoder in RTTY_DECODERS and audio is not None:
             self._set_decoder_pitch(audio)
             return
-        step = self.step_combo.currentData()
-        self.tune_to(round(x * 1000 / step) * step)
+        # fréquence exacte sous la souris (celle affichée), sans le pas d'accord
+        self.tune_to(round(x * 1000))
 
     def _audio_offset(self, rf_hz):
         """Fréquence audio d'un signal RF, s'il tombe dans la bande en BLU."""
