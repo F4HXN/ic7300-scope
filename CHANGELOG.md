@@ -45,6 +45,7 @@
 | 41 | 24/10/2026 | `e0e49d6` | Émission RTTY en LSB-D/USB-D (AFSK 45 bauds sur les tonalités du décodeur, texte émis en rouge), messages pré-enregistrés séparés CW et RTTY, mémoires SSTV et RTTY |
 | 42 | 24/10/2026 | `0c51f6c` | Curseur de largeur du filtre (CI-V, suivi sur le waterfall), glisser du waterfall vers la droite = fréquence qui monte, au quart de l'échelle (Maj : 10 fois plus fin), molette cumulée, CW en direct au clavier (case Direct, Échap pour arrêter) |
 | 43 | 25/10/2026 | `24785fe` | RTTY et RTTY-R retirés du menu Mode (le RTTY s'émet en LSB-D/USB-D), rappel en italique du mode à prendre sur la ligne Décodeur (CW ou CW-R, USB-D ou LSB-D), fréquence sous la souris en haut à gauche du spectre |
+| 44 | 25/10/2026 | `195483e` | Presets du PC (mode, filtre, largeur, puissance, USB MOD Level, décodeur ; FT8, FT4, RTTY et CW au départ), modes du rappel cliquables (la radio y passe, USB-D pour FT8/FT4), clic sur le waterfall à la fréquence exacte de la souris, sans le pas d'accord |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
