@@ -2130,6 +2130,8 @@ class MainWindow(QtWidgets.QMainWindow):
         text_window_button.clicked.connect(self.open_text_window)
         self.text_window = None
         decoder_row.addWidget(text_window_button)
+        # sans décodeur, pas de texte : ni Effacer ni Grande fenêtre
+        self.decoder_text_buttons = (decoder_clear, text_window_button)
         self.record_button = QtWidgets.QPushButton("● Enreg.")
         self.record_button.setCheckable(True)
         self.record_button.setToolTip(f"Enregistre le son de la radio dans {RECORD_DIR}")
@@ -2442,6 +2444,9 @@ class MainWindow(QtWidgets.QMainWindow):
         index = layout.indexOf(self.decoder_box) + 1
         layout.insertLayout(index, cw_row)
         layout.insertLayout(index + 1, macro_row)
+        # en phonie (USB, LSB) ces deux lignes se cachent, sauf le carnet
+        self.tx_rows = (cw_row, macro_row)
+        self.voice_keep = (log_button, logbook_button)
         self._cw_enable(False)
         self.tx_source.currentIndexChanged.connect(self.on_tx_source)
         self.on_tx_source()
@@ -2863,11 +2868,13 @@ class MainWindow(QtWidgets.QMainWindow):
             "(double-clic sur une ligne décodée : réponse émise toute seule)"
             if ft else "Texte à émettre en CW, Entrée pour envoyer "
             "(^AR, ^SK… pour les signes liés)")
-        for widget in (self.cw_speed, self.cw_hand, self.cw_direct):
-            widget.setVisible(not (rtty or ft))
-        for widget in (self.ft_parity, self.ft_repeat, self.ft_tx_label):
-            widget.setVisible(ft)
-        self.cw_ending.setVisible(not ft)
+        # ce qui doit se voir, appliqué une seule fois plus bas : la radio
+        # renvoie son mode chaque seconde, rien ne doit clignoter
+        shown = {widget: not (rtty or ft)
+                 for widget in (self.cw_speed, self.cw_hand, self.cw_direct)}
+        shown.update({widget: ft for widget in (self.ft_parity, self.ft_repeat,
+                                                 self.ft_tx_label)})
+        shown[self.cw_ending] = not ft
         self._show_ft_tx_line()
         kind = "rtty" if rtty else "ft" if ft else "cw"
         if kind != self.macro_kind:
@@ -2875,6 +2882,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self._build_cw_macros()
             self.edit_macros_button.setToolTip(
                 f"Modifier les messages {kind.upper()} pré-enregistrés")
+        # phonie, ou pas de décodeur : rien à émettre en texte, seuls Noter le
+        # QSO et Carnet… restent
+        hide_all = (self.mode_combo.currentText() in ("USB", "LSB")
+                    or self.decoder_combo.currentData() is None)
+        pending = list(getattr(self, "tx_rows", ()))
+        while pending:
+            layout = pending.pop()
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item.layout():
+                    pending.append(item.layout())
+                widget = item.widget()
+                if widget:
+                    # sans effet si déjà dans cet état : pas de saut d'affichage
+                    widget.setVisible(widget in self.voice_keep
+                                      or (not hide_all and shown.get(widget, True)))
 
     def _show_ft_tx_line(self):
         """Ligne rouge : fréquence d'émission FT, en Hz audio ou en kHz RF."""
@@ -4242,11 +4265,28 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_decoder_changed(self):
         name = self.decoder_combo.currentData()
+        # le mode de la radio suit le décodeur : RTTY, FT8 et FT4 en mode data
+        # (le RTTY garde LSB-D s'il y est déjà), la CW en CW (ou CW-R)
+        current = self.mode_combo.currentText()
+        wanted = None
+        if name in FT_DECODERS and current != "USB-D":
+            wanted = "USB-D"
+        elif name in RTTY_DECODERS and not current.endswith("-D"):
+            wanted = "USB-D"
+        elif name == "cw" and current not in ("CW", "CW-R"):
+            wanted = "CW"
+        if wanted and getattr(self, "civ", None) and not self.tx_active:
+            self.mode_combo.setCurrentText(wanted)
+            self.on_mode_selected(wanted)
+            self.statusBar().showMessage(f"Radio en {wanted} pour le décodeur "
+                                         f"{self.decoder_combo.currentText()}")
         decoder = self.audio.decoders.get(name)
         if decoder:
             decoder.auto_pitch = self.decoder_auto.isChecked()
         self.audio.decoder = decoder
         self.decoder_box.setVisible(decoder is not None)
+        for button in self.decoder_text_buttons:
+            button.setVisible(decoder is not None)
         self.reply_text.setVisible(name in FT_DECODERS)
         self.decoder_auto.setToolTip({
             "cw": "Cherche la note CW la plus forte entre 300 et 1200 Hz. "
