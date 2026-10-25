@@ -48,6 +48,7 @@
 | 44 | 25/10/2026 | `195483e` | Presets du PC (mode, filtre, largeur, puissance, USB MOD Level, décodeur ; FT8, FT4, RTTY et CW au départ), modes du rappel cliquables (la radio y passe, USB-D pour FT8/FT4), clic sur le waterfall à la fréquence exacte de la souris, sans le pas d'accord |
 | 45 | 25/10/2026 | `24bd1fc` | Manuel complet écran par écran : [MANUEL.md](MANUEL.md) ; README remis à jour (presets, émission RTTY, CW directe et pioche, carnet, pas d'émission FT8, `python3-scipy`) |
 | 46 | 25/10/2026 | `a956845` | Bargraph Entrée TX (micro en continu ou fichier, Niveau PC compris) et Sortie TX (Po en W) côte à côte, ALC à côté d'Audio dBFS, tension d'alimentation Vd, bouton COMP et niveau du compresseur de parole, bouton ATU en vert en service, bargraphs alignés avec des carrés de même taille |
+| 47 | 25/10/2026 | `195acbc` | Émission FT8 et FT4 (`ft8_encoder.py` : `ft8code`/`ft4code` puis GFSK) au créneau pair ou impair, fréquence choisie au clic (ligne rouge), messages pré-enregistrés FT, QSO automatique (réponses toutes seules, CQ relancé après chaque QSO, arrêt si la station appelée en prend une autre), réponses surlignées et panneau Réponses, décodage anticipé avant la fin du créneau, mémoires FT4 de 80 m à 6 m |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
