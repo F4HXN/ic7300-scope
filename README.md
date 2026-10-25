@@ -68,6 +68,7 @@ ni interface externe ni logiciel de pilotage à installer.
 | **Presets** | Mode, filtre, largeur, puissance, USB MOD Level et décodeur d'un clic (FT8, FT4, RTTY, CW au départ, et les siens) |
 | **Réglages** | Volume, AF, **RF GAIN**, **SQL**, puissance, niveau TX |
 | **Boutons** | `TUNE`, `ATU`, filtres `FIL1-3` et leur largeur, VFO A/B, marche/arrêt `⏻` |
+| **Filtres de réception** | `NB` et `NR` avec leur niveau, notch auto ou manuel, préampli, `ATT`, `IP+` |
 | **Sécurité** | L'écoute sur le PC se coupe pendant toute émission (pas de larsen) |
 
 ### 🔤 Décodeurs
