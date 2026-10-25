@@ -49,6 +49,7 @@
 | 45 | 25/10/2026 | `24bd1fc` | Manuel complet écran par écran : [MANUEL.md](MANUEL.md) ; README remis à jour (presets, émission RTTY, CW directe et pioche, carnet, pas d'émission FT8, `python3-scipy`) |
 | 46 | 25/10/2026 | `a956845` | Bargraph Entrée TX (micro en continu ou fichier, Niveau PC compris) et Sortie TX (Po en W) côte à côte, ALC à côté d'Audio dBFS, tension d'alimentation Vd, bouton COMP et niveau du compresseur de parole, bouton ATU en vert en service, bargraphs alignés avec des carrés de même taille |
 | 47 | 25/10/2026 | `195acbc` | Émission FT8 et FT4 (`ft8_encoder.py` : `ft8code`/`ft4code` puis GFSK) au créneau pair ou impair, fréquence choisie au clic (ligne rouge), messages pré-enregistrés FT, QSO automatique (réponses toutes seules, CQ relancé après chaque QSO, arrêt si la station appelée en prend une autre), réponses surlignées et panneau Réponses, décodage anticipé avant la fin du créneau, mémoires FT4 de 80 m à 6 m |
+| 48 | 25/10/2026 | `50a9128` | Filtres de réception de la radio sur la ligne du scope : NB et NR avec leur niveau, notch auto ou manuel, préampli, ATT, IP+ (lus sur la radio, en vert en service) ; bouton FIL1-3 en cours en jaune |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
