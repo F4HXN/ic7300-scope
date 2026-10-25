@@ -4,7 +4,8 @@
 
 **Le poste de trafic complet pour l'Icom IC-7300, sous Linux.**
 
-Spectre, waterfall, décodeurs numériques, émission CW et pilotage à distance,
+Spectre, waterfall, décodeurs numériques, émission CW et RTTY, carnet de trafic
+et pilotage à distance,
 dans une seule fenêtre.
 
 ![Python](https://img.shields.io/badge/Python-3-3776AB?logo=python&logoColor=white)
@@ -25,6 +26,7 @@ dans une seule fenêtre.
 - [Trafic en CW](#trafic-en-cw)
 - [Piloter la radio depuis un autre PC](#piloter-la-radio-depuis-un-autre-pc)
 - [Organisation du code](#organisation-du-code)
+- [Manuel complet](MANUEL.md)
 - [Historique des modifications](CHANGELOG.md)
 
 ---
@@ -40,7 +42,7 @@ ni interface externe ni logiciel de pilotage à installer.
 ```
  IC-7300 ──USB──┬── CI-V (CP2102) ───── fréquence, mode, S-mètre, scope RF, PTT, CW
                 └── USB Audio CODEC ─── son reçu → spectre, waterfall, décodeurs
-                                        son émis ← FT8, SSTV, fichier audio
+                                        son émis ← SSTV, RTTY, micro, fichier audio
 ```
 
 ---
@@ -51,7 +53,7 @@ ni interface externe ni logiciel de pilotage à installer.
 
 | | |
 |---|---|
-| **Scope RF** | Le spectre de la radio elle-même, lu en CI-V, avec clic pour se caler sur un signal |
+| **Scope RF** | Le spectre de la radio elle-même, lu en CI-V : clic pour aller à la fréquence exacte de la souris, glisser comme un VFO, molette au pas choisi |
 | **Spectre audio** | FFT du son reçu, jusqu'à 3,5 kHz par défaut (`--fmax`) |
 | **Waterfall** | Hauteur réglable **à la souris** en tirant la séparation avec le spectre |
 | **S-mètre** | En bargraph, lu en continu |
@@ -63,8 +65,9 @@ ni interface externe ni logiciel de pilotage à installer.
 |---|---|
 | **Bandes** | De 160 m à 4 m, fréquence et mode de départ pour chacune |
 | **Mémoires** | Celles du PC et les 99 canaux de la radio : lecture au démarrage, envoi, modification, effacement |
+| **Presets** | Mode, filtre, largeur, puissance, USB MOD Level et décodeur d'un clic (FT8, FT4, RTTY, CW au départ, et les siens) |
 | **Réglages** | Volume, AF, **RF GAIN**, **SQL**, puissance, niveau TX |
-| **Boutons** | `TUNE`, `ATU`, filtres `FIL1-3`, marche/arrêt `⏻` |
+| **Boutons** | `TUNE`, `ATU`, filtres `FIL1-3` et leur largeur, VFO A/B, marche/arrêt `⏻` |
 | **Sécurité** | L'écoute sur le PC se coupe pendant toute émission (pas de larsen) |
 
 ### 🔤 Décodeurs
@@ -81,22 +84,32 @@ ni interface externe ni logiciel de pilotage à installer.
 ### 📡 Émission
 
 - **CW** tapée au clavier, envoyée par le manipulateur interne de la radio (CI-V),
-  avec vitesse réglable et arrêt immédiat
-- **FT8 / FT4** et **SSTV** par la carte son de la radio
-- **Fichier audio** au choix, pour passer un message enregistré
+  avec vitesse réglable et arrêt immédiat ; en **direct** (chaque lettre part
+  aussitôt) ou **à la pioche** (rythme humain, ligne DTR) ; texte émis en rouge
+- **RTTY** 45 bauds en AFSK (USB-D / LSB-D), sur les tonalités du décodeur
+- **SSTV** par la carte son de la radio, avec 4 lignes de texte sur l'image
+- **Micro du PC** ou **fichier audio** au choix, pour passer un message enregistré
 - **Enregistrement** de la réception en WAV
+
+### 📒 Trafic
+
+- Messages pré-enregistrés CW et RTTY, modifiables, remplis avec sa station et le correspondant
+- Prénom du correspondant trouvé sur qrz.com, double-clic sur un indicatif décodé
+- **Noter le QSO** : copie ADIF locale, envoi à Wavelog et au carnet qrz.com
 
 ---
 
 ## Installation
 
+> 📗 Manuel complet du logiciel, écran par écran : [MANUEL.md](MANUEL.md)
+>
 > 📘 Guide pas à pas pour un PC Ubuntu (paquets, radio, son, pilotage à distance, dépannage) : [INSTALLATION.md](INSTALLATION.md)
 
 ### Dépendances
 
 ```bash
-sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy python3-serial \
-                 pulseaudio-utils wsjtx
+sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy python3-scipy \
+                 python3-serial pulseaudio-utils wsjtx
 ```
 
 > `wsjtx` n'est nécessaire que pour le décodage FT8 / FT4 (il fournit `jt9`).
@@ -206,11 +219,13 @@ python3 ic7300_scope.py --remote <IP-du-PC-de-la-radio>
 |---|---|
 | `ic7300_scope.py` | Fenêtre principale, CI-V, son, spectre, waterfall, émission |
 | `cw_decoder.py` | Décodeur CW |
-| `rtty_decoder.py` | Décodeur RTTY |
+| `cw_pioche.py` | CW à la pioche : rythme d'une main |
+| `rtty_decoder.py` | Décodeur et modulateur RTTY |
 | `ft8_decoder.py` | FT8 / FT4 via `jt9` |
 | `sstv.py` · `sstv_window.py` | SSTV : codage, décodage et fenêtre |
 | `wefax.py` | Fax météo : réception des cartes |
 | `memory_window.py` | Fenêtre des mémoires (PC et radio) |
+| `carnet.py` · `qrz.py` | Carnet ADIF, Wavelog, qrz.com |
 | `cat_server.py` | Serveur CI-V réseau pour `--remote` |
 | `serveur_gui.py` | Fenêtre IC-7300 Serveur : marche/arrêt et commandes transmises |
 | `install.sh` · `install-serveur.sh` | Entrées du menu des applications |
