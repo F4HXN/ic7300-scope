@@ -1469,6 +1469,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.freq_entry.returnPressed.connect(self.on_freq_entered)
         self.mode_combo = QtWidgets.QComboBox()
         self.mode_combo.addItems(MODE_NAMES)
+        # RTTY et RTTY-R de la radio (FSK) retirés du menu : l'émission RTTY
+        # se fait en LSB-D/USB-D ; gardés cachés pour afficher le mode quand
+        # la radio y est mise depuis sa façade
+        for i, name in enumerate(MODE_NAMES):
+            if name.startswith("RTTY"):
+                self.mode_combo.view().setRowHidden(i, True)
+                self.mode_combo.model().item(i).setEnabled(False)   # ni molette ni clavier
         self.mode_combo.setStyleSheet("font: bold 16pt; color: #ffd54a;")
         self.mode_combo.activated[str].connect(self.on_mode_selected)
         self.filter_num = None
@@ -1714,12 +1721,12 @@ class MainWindow(QtWidgets.QMainWindow):
             line.setVisible(False)
             plot.addItem(line, ignoreBounds=True)
             self.pitch_lines.append(line)
-        # fréquence sous la souris, dans le coin haut droit du waterfall
-        self.cursor_text = pg.TextItem("", color="#ffffff", anchor=(1, 0),
+        # fréquence sous la souris, dans le coin haut gauche du spectre
+        self.cursor_text = pg.TextItem("", color="#ffffff", anchor=(0, 0),
                                        fill=(16, 20, 24, 200))
         self.cursor_text.setFont(QtGui.QFont("monospace", 12, QtGui.QFont.Bold))
-        self.cursor_text.setParentItem(self.wf_plot.vb)    # hors des coordonnées
-        self.wf_plot.vb.sigResized.connect(self._place_cursor_text)
+        self.cursor_text.setParentItem(self.spec_plot.vb)  # hors des coordonnées
+        self.cursor_text.setPos(6, 6)
         graphics.scene().sigMouseMoved.connect(self.on_mouse_moved)
         graphics.scene().sigMouseClicked.connect(self.on_mouse_clicked)
         # molette : un pas par cran ; glisser en vue RF : vers la droite, la fréquence monte
@@ -1867,6 +1874,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_led = QtWidgets.QLabel("●")
         self.decoder_info = QtWidgets.QLabel("")
         self.decoder_info.setStyleSheet("font: 11pt monospace;")
+        # mode à prendre pour émettre : CW ou CW-R pour la CW, mode data
+        # (AFSK) pour le RTTY 45
+        self.mode_hint = QtWidgets.QLabel()
+        self.mode_hint.setStyleSheet("font: italic 11pt; color: #90a4ae;")
+        self.mode_hint.setVisible(False)
         decoder_clear = QtWidgets.QPushButton("Effacer")
         decoder_row.addWidget(QtWidgets.QLabel("Décodeur"))
         decoder_row.addWidget(self.decoder_combo)
@@ -1874,6 +1886,7 @@ class MainWindow(QtWidgets.QMainWindow):
         decoder_row.addWidget(self.rtty_invert)
         decoder_row.addWidget(self.decoder_led)
         decoder_row.addWidget(self.decoder_info)
+        decoder_row.addWidget(self.mode_hint)
         self.decoder_led.setMinimumWidth(16)
         decoder_row.addStretch()
         decoder_row.addWidget(decoder_clear)
@@ -2450,6 +2463,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tune_to(hz)
 
     def on_mode_selected(self, name):
+        self._update_tx_text()
         self._filter_tooltips()
         self._update_markers()
         if self.civ:
@@ -2514,6 +2528,13 @@ class MainWindow(QtWidgets.QMainWindow):
         cw = self.mode_combo.currentText() in ("CW", "CW-R")
         self._cw_enable(getattr(self, "civ", None) is not None and (cw or rtty))
         self.tx_text_label.setText("RTTY" if rtty else "CW")
+        # mode de la radio qu'il faut pour répondre avec ce décodeur
+        hint = {"rtty": (not self.mode_combo.currentText().endswith("-D"),
+                         "passer en USB-D ou LSB-D"),
+                "cw": (not cw, "passer en CW ou CW-R")}.get(self.decoder_combo.currentData())
+        self.mode_hint.setVisible(bool(hint and hint[0]))
+        if hint:
+            self.mode_hint.setText(hint[1])
         self.cw_text.setPlaceholderText(
             "Texte à émettre en RTTY sur les tonalités du décodeur, Entrée pour envoyer"
             if rtty else "Texte à émettre en CW, Entrée pour envoyer "
@@ -3353,9 +3374,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.cursor_text.setText(format_frequency(round(x * 1000))
                                      if self.view == "rf" else f"{x:.0f} Hz")
         self.cursor_text.setVisible(x is not None)
-
-    def _place_cursor_text(self):
-        self.cursor_text.setPos(self.wf_plot.vb.width() - 6, 6)
 
     def _on_split(self, pos):
         """Vrai si la souris est sur la limite entre spectre et waterfall."""
