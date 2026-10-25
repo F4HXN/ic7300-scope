@@ -44,6 +44,7 @@
 | 40 | 24/10/2026 | `40f1084` | Fenêtre « Carnet… » : liste des QSO notés, modifier ou effacer un QSO (copie locale, sauvegarde .bak) |
 | 41 | 24/10/2026 | `e0e49d6` | Émission RTTY en LSB-D/USB-D (AFSK 45 bauds sur les tonalités du décodeur, texte émis en rouge), messages pré-enregistrés séparés CW et RTTY, mémoires SSTV et RTTY |
 | 42 | 24/10/2026 | `0c51f6c` | Curseur de largeur du filtre (CI-V, suivi sur le waterfall), glisser du waterfall vers la droite = fréquence qui monte, au quart de l'échelle (Maj : 10 fois plus fin), molette cumulée, CW en direct au clavier (case Direct, Échap pour arrêter) |
+| 43 | 25/10/2026 | `24785fe` | RTTY et RTTY-R retirés du menu Mode (le RTTY s'émet en LSB-D/USB-D), rappel en italique du mode à prendre sur la ligne Décodeur (CW ou CW-R, USB-D ou LSB-D), fréquence sous la souris en haut à gauche du spectre |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
