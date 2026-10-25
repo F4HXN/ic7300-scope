@@ -47,6 +47,7 @@
 | 43 | 25/10/2026 | `24785fe` | RTTY et RTTY-R retirés du menu Mode (le RTTY s'émet en LSB-D/USB-D), rappel en italique du mode à prendre sur la ligne Décodeur (CW ou CW-R, USB-D ou LSB-D), fréquence sous la souris en haut à gauche du spectre |
 | 44 | 25/10/2026 | `195483e` | Presets du PC (mode, filtre, largeur, puissance, USB MOD Level, décodeur ; FT8, FT4, RTTY et CW au départ), modes du rappel cliquables (la radio y passe, USB-D pour FT8/FT4), clic sur le waterfall à la fréquence exacte de la souris, sans le pas d'accord |
 | 45 | 25/10/2026 | `24bd1fc` | Manuel complet écran par écran : [MANUEL.md](MANUEL.md) ; README remis à jour (presets, émission RTTY, CW directe et pioche, carnet, pas d'émission FT8, `python3-scipy`) |
+| 46 | 25/10/2026 | `a956845` | Bargraph Entrée TX (micro en continu ou fichier, Niveau PC compris) et Sortie TX (Po en W) côte à côte, ALC à côté d'Audio dBFS, tension d'alimentation Vd, bouton COMP et niveau du compresseur de parole, bouton ATU en vert en service, bargraphs alignés avec des carrés de même taille |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
