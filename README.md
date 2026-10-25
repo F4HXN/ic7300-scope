@@ -4,7 +4,7 @@
 
 **Le poste de trafic complet pour l'Icom IC-7300, sous Linux.**
 
-Spectre, waterfall, décodeurs numériques, émission CW et RTTY, carnet de trafic
+Spectre, waterfall, décodeurs numériques, émission CW, RTTY, FT8 et FT4, carnet de trafic
 et pilotage à distance,
 dans une seule fenêtre.
 
@@ -42,7 +42,7 @@ ni interface externe ni logiciel de pilotage à installer.
 ```
  IC-7300 ──USB──┬── CI-V (CP2102) ───── fréquence, mode, S-mètre, scope RF, PTT, CW
                 └── USB Audio CODEC ─── son reçu → spectre, waterfall, décodeurs
-                                        son émis ← SSTV, RTTY, micro, fichier audio
+                                        son émis ← FT8, FT4, SSTV, RTTY, micro, fichier
 ```
 
 ---
@@ -77,7 +77,7 @@ ni interface externe ni logiciel de pilotage à installer.
 | **CW** | Démodulation à la note, seuil adaptatif, vitesse suivie automatiquement |
 | **RTTY 45** | 45,45 bauds, écart 170 Hz, Baudot ITA2 |
 | **RTTY 50 météo** | 50 bauds, écart 450 Hz : bulletins de la météo allemande (DWD) |
-| **FT8 / FT4** | Créneaux calés sur l'heure UTC, décodage par `jt9` (moteur de WSJT-X) |
+| **FT8 / FT4** | Créneaux calés sur l'heure UTC, décodage par `jt9` (moteur de WSJT-X), anticipé avant la fin du créneau pour répondre au suivant |
 | **SSTV** | Réception et émission : Martin, Scottie, Robot, PD ; 4 lignes de texte en couleur sur l'image |
 | **Fax météo** | Cartes WEFAX 120 lignes/min, IOC 576 (DWD Pinneberg…), calage et pente automatiques |
 
@@ -87,13 +87,16 @@ ni interface externe ni logiciel de pilotage à installer.
   avec vitesse réglable et arrêt immédiat ; en **direct** (chaque lettre part
   aussitôt) ou **à la pioche** (rythme humain, ligne DTR) ; texte émis en rouge
 - **RTTY** 45 bauds en AFSK (USB-D / LSB-D), sur les tonalités du décodeur
+- **FT8 / FT4** au créneau UTC pair ou impair, fréquence choisie au clic ;
+  QSO automatique (réponses toutes seules, CQ relancé après chaque QSO),
+  double-clic sur un CQ décodé pour appeler la station
 - **SSTV** par la carte son de la radio, avec 4 lignes de texte sur l'image
 - **Micro du PC** ou **fichier audio** au choix, pour passer un message enregistré
 - **Enregistrement** de la réception en WAV
 
 ### 📒 Trafic
 
-- Messages pré-enregistrés CW et RTTY, modifiables, remplis avec sa station et le correspondant
+- Messages pré-enregistrés CW, RTTY et FT, modifiables, remplis avec sa station et le correspondant
 - Prénom du correspondant trouvé sur qrz.com, double-clic sur un indicatif décodé
 - **Noter le QSO** : copie ADIF locale, envoi à Wavelog et au carnet qrz.com
 
@@ -112,7 +115,7 @@ sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy python3-scipy \
                  python3-serial pulseaudio-utils wsjtx
 ```
 
-> `wsjtx` n'est nécessaire que pour le décodage FT8 / FT4 (il fournit `jt9`).
+> `wsjtx` n'est nécessaire que pour le FT8 / FT4 (il fournit `jt9`, `ft8code` et `ft4code`).
 
 ### Récupérer le projet
 
@@ -222,6 +225,7 @@ python3 ic7300_scope.py --remote <IP-du-PC-de-la-radio>
 | `cw_pioche.py` | CW à la pioche : rythme d'une main |
 | `rtty_decoder.py` | Décodeur et modulateur RTTY |
 | `ft8_decoder.py` | FT8 / FT4 via `jt9` |
+| `ft8_encoder.py` | Émission FT8 / FT4 (`ft8code`, `ft4code`) |
 | `sstv.py` · `sstv_window.py` | SSTV : codage, décodage et fenêtre |
 | `wefax.py` | Fax météo : réception des cartes |
 | `memory_window.py` | Fenêtre des mémoires (PC et radio) |

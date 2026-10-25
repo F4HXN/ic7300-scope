@@ -17,7 +17,7 @@ installer les paquets, régler la radio et le son, voir
 9. [Son : écoute et émission](#9-son--écoute-et-émission)
 10. [Décodeurs](#10-décodeurs)
 11. [Émission CW](#11-émission-cw)
-12. [Émission RTTY](#12-émission-rtty)
+12. [Émission RTTY, FT8 et FT4](#12-émission-rtty-ft8-et-ft4)
 13. [Messages pré-enregistrés, station et correspondant](#13-messages-pré-enregistrés-station-et-correspondant)
 14. [Carnet de trafic](#14-carnet-de-trafic)
 15. [SSTV et fax météo](#15-sstv-et-fax-météo)
@@ -36,7 +36,7 @@ L'IC-7300 se branche au PC par un seul câble USB, qui porte deux appareils :
 | Appareil vu par le PC | Rôle |
 |---|---|
 | Port série (puce CP2102) | Commande **CI-V** : fréquence, mode, filtres, réglages, mesures, scope RF, émission, CW |
-| Carte son « USB Audio CODEC » | **Son reçu** (spectre audio, décodeurs, écoute) et **son émis** (SSTV, RTTY, micro, fichier) |
+| Carte son « USB Audio CODEC » | **Son reçu** (spectre audio, décodeurs, écoute) et **son émis** (FT8, FT4, SSTV, RTTY, micro, fichier) |
 
 Le logiciel fait tourner deux tâches de fond :
 
@@ -378,12 +378,13 @@ La **ligne verte pointillée** sur le spectre marque la note du décodeur (CW, R
 ### FT8 et FT4
 
 - Le son est découpé en créneaux calés sur l'heure UTC : 15 s en FT8, 7,5 s en FT4.
-- À la fin de chaque créneau, le son est confié à `jt9` (le moteur de WSJT-X, paquet `wsjtx`).
+- Le son est confié à `jt9` (le moteur de WSJT-X, paquet `wsjtx`) deux fois par créneau : tôt (12,4 s en FT8, 5,7 s en FT4) pour avoir les messages avant la fin du créneau, puis au complet à la fin, pour les signaux faibles.
 - Une ligne par message : `UTC  dB  DT  Freq  Message`.
 - **L'horloge du PC doit être juste à moins d'une seconde** (`timedatectl` : `System clock synchronized: yes`).
 - Le voyant s'allume pendant le décodage d'un créneau. Il n'y a pas de ligne de note : toute la bande est décodée.
 - Rappel : « passer en USB-D ».
 - Fréquences usuelles : 14,074 MHz (FT8), 14,080 MHz (FT4), les autres dans les mémoires du PC.
+- Émission : voir [§ 12](#12-émission-rtty-ft8-et-ft4).
 
 ### Indicatif dans le texte décodé
 
@@ -424,7 +425,9 @@ La ligne **CW** se trouve juste sous le texte reçu : on lit, puis on répond. E
 
 ---
 
-## 12. Émission RTTY
+## 12. Émission RTTY, FT8 et FT4
+
+### RTTY
 
 Avec le décodeur **RTTY 45** ou **RTTY 50 météo** et la radio en **USB-D ou LSB-D**, la ligne d'émission passe en **RTTY**.
 
@@ -433,6 +436,49 @@ Avec le décodeur **RTTY 45** ou **RTTY 50 météo** et la radio en **USB-D ou L
 - Le texte émis s'écrit en rouge au rythme de l'émission.
 - **Stop** ou **Échap** arrête l'émission.
 - Les messages pré-enregistrés passent à la série RTTY (sans signes liés, indicatif répété trois fois).
+
+### FT8 et FT4
+
+Avec le décodeur **FT8** ou **FT4** et la radio en **USB-D** (ou USB), la ligne d'émission passe en **FT8** ou **FT4**. Le message est codé par `ft8code` / `ft4code` (fournis avec WSJT-X), mis en audio par le logiciel, puis émis en mode data au début d'un créneau UTC.
+
+| Élément | Rôle |
+|---|---|
+| Champ de texte | Le message ; **Entrée** l'arme : il part au prochain créneau choisi |
+| **Pair / Impair** | Créneau d'émission. FT8 : pair = 00 et 30 s, impair = 15 et 45 s ; FT4 : créneaux de 7,5 s. Toujours l'inverse du correspondant |
+| **Répéter** (coché au départ) | Le CQ ou l'appel repart à chaque cycle, sans limite de temps, jusqu'à **Stop**, **Échap** ou un autre message. `RR73` et `73` ne partent qu'une fois |
+| **TX … Hz** | Fréquence audio d'émission, marquée par la **ligne rouge** pointillée. Un **clic** sur le spectre ou le waterfall la change (en vue RF, dans la bande écoutée) |
+| **Stop** ou **Échap** | Annule le message armé et coupe l'émission en cours |
+
+- Le son commence 0,5 s après le début du créneau, comme dans WSJT-X. Un message armé en retard part quand même s'il reste moins de 2 s de retard en FT8 (1 s en FT4), sinon au créneau suivant de même parité.
+- Le message émis s'écrit **en rouge** parmi les messages décodés : `heure  TX  fréquence  message`.
+- Messages standard : deux indicatifs plus un locator, un report (`-12`), `R-12`, `RR73`, `RRR` ou `73`. Le texte libre est limité à 13 caractères ; un message qui serait reçu autrement est refusé, avec ce qu'il donnerait.
+- Comme WSJT-X, chaque créneau est décodé **avant sa fin** (à 12,4 s en FT8, 5,7 s en FT4, décodage rapide) : les messages arrivent vers 14,5 s et la réponse part **dès le créneau suivant**. Un second décodage, complet, à la fin du créneau, ajoute les signaux faibles manqués, sans doublons.
+
+**Messages pré-enregistrés FT** : **CQ** (`CQ {call} {loc4}`), **Répondre** (`{dest} {call} {loc4}`), **Report** (`{dest} {call} {rpt}`), **R+report** (`{dest} {call} R{rpt}`), **RR73**, **73**.
+
+**QSO automatique** : dès qu'un message est armé (CQ ou appel), le logiciel répond tout seul à chaque message qui lui est adressé, avec l'étape suivante du QSO (tableau plus bas), au créneau opposé.
+
+- **Depuis ton CQ** : une station répond, le QSO se déroule tout seul ; à la fin (`RR73` émis, ou `73` reçu), **le CQ reprend** au cycle suivant. La barre d'état rappelle de noter le QSO.
+- **Quand tu appelles une station** : le QSO se déroule tout seul jusqu'au `73`, puis l'émission s'arrête.
+- **La station appelée répond à une autre** : l'appel s'arrête (« F1ABC répond à F5XYZ : appel arrêté »).
+- Une autre station qui t'appelle pendant un QSO est surlignée, mais ne l'interrompt pas.
+- **Stop** ou **Échap** arrête tout à n'importe quel moment.
+
+**Double-clic sur une ligne décodée** (sur un CQ ou sur une réponse) : le logiciel prépare le message suivant du QSO, règle le correspondant (et son prénom via qrz.com), le report à envoyer (SNR de la ligne) et le créneau opposé au sien, puis **arme aussitôt le message** : il part tout seul au prochain créneau, sans Entrée. **Échap** l'annule.
+
+| Ligne double-cliquée | Message émis |
+|---|---|
+| `CQ F1ABC JN23` | `F1ABC F4HXN JN33` |
+| `F4HXN F1ABC JN23` (réponse à mon CQ) | `F1ABC F4HXN -07` |
+| `F4HXN F1ABC -09` | `F1ABC F4HXN R-15` |
+| `F4HXN F1ABC R-11` | `F1ABC F4HXN RR73` |
+| `F4HXN F1ABC RR73` | `F1ABC F4HXN 73` |
+| `F4HXN F1ABC 73` | Rien : le QSO est fini, il reste à le noter |
+| `F5XYZ DL1AA R+02` (QSO d'autres) | `DL1AA F4HXN JN33` (appel de la station qui émet) |
+
+**Réponses isolées** : une ligne décodée qui contient ton indicatif est **surlignée en jaune**, et la barre d'état indique qui te répond. Le panneau **Réponses**, à droite du texte décodé, ne garde que le fil de tes QSO : ces lignes et tes émissions en rouge. Un double-clic y émet la réponse comme dans la zone principale. **Effacer** vide les deux.
+
+**Noter le QSO** reprend le report envoyé, le report reçu et le locator relevés pendant le QSO.
 
 ---
 
@@ -481,10 +527,12 @@ Champs utilisables :
 | `{dname}` | Son prénom |
 | `{gm}` | GM avant midi, GA l'après-midi, GE après 18 h |
 | `{name}`, `{qth}`, `{loc}`, `{rig}`, `{pwr}`, `{ant}` | Ma station… |
+| `{loc4}` | Locator sur 4 caractères (FT8 / FT4) |
+| `{rpt}` | Report FT à envoyer (SNR du correspondant) |
 
 Si un champ nécessaire est vide (sauf le prénom du correspondant), le logiciel le dit et place le curseur sur le champ à remplir.
 
-Le bouton **✎** ouvre l'éditeur des messages du mode en cours (CW ou RTTY) : nom du bouton, description et texte de chaque message, **Ajouter**, **Supprimer**, **▲ Monter**, **▼ Descendre**, boutons pour **insérer un champ**, **aperçu** rempli, et **Messages d'origine** pour revenir aux messages livrés. Les messages sont dans `messages-cw.json` et `messages-rtty.json`.
+Le bouton **✎** ouvre l'éditeur des messages du mode en cours (CW, RTTY ou FT) : nom du bouton, description et texte de chaque message, **Ajouter**, **Supprimer**, **▲ Monter**, **▼ Descendre**, boutons pour **insérer un champ**, **aperçu** rempli, et **Messages d'origine** pour revenir aux messages livrés. Les messages sont dans `messages-cw.json`, `messages-rtty.json` et `messages-ft.json`.
 
 ### Fin de message…
 
@@ -641,6 +689,7 @@ Code :
 | `cw_pioche.py` | Rythme de la CW à la pioche et de l'écho rouge |
 | `rtty_decoder.py` | Décodeur et modulateur RTTY |
 | `ft8_decoder.py` | FT8 / FT4 via `jt9` |
+| `ft8_encoder.py` | Émission FT8 / FT4 : message en son (GFSK) |
 | `sstv.py` · `sstv_window.py` | SSTV : codage, décodage et fenêtre |
 | `wefax.py` | Fax météo |
 | `memory_window.py` | Fenêtre des mémoires |
@@ -660,9 +709,9 @@ Code :
 | Spectre / waterfall | Glisser (RF) | Accord comme un VFO ; **Maj** : 10 fois plus fin |
 | Spectre / waterfall | Molette | Un pas |
 | Limite spectre / waterfall | Tirer | Change leur hauteur |
-| Texte décodé | Double-clic sur un indicatif | Le met en correspondant |
+| Texte décodé | Double-clic sur un indicatif | Le met en correspondant ; en FT8 / FT4, émet aussi le message suivant au prochain créneau |
 | Champ CW / RTTY | Entrée | Émet |
-| Champ CW / RTTY | Échap | Arrête l'émission |
+| Champ CW / RTTY / FT | Échap | Arrête l'émission (FT : annule le message armé) |
 | Grande fenêtre du décodeur | F11 / Échap | Plein écran / sortie du plein écran |
 | Rappel du mode | Clic sur un mode | La radio y passe |
 

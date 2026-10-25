@@ -28,7 +28,7 @@ sudo apt install git python3-pyqt5 python3-pyqtgraph python3-numpy python3-scipy
 | `python3-numpy`, `python3-scipy` | Calculs du spectre et des décodeurs (SSTV, fax, RTTY) |
 | `python3-serial` | Commande CI-V de la radio |
 | `pulseaudio-utils` | `pactl` et `parec` : son de la radio et partage réseau |
-| `wsjtx` | Fournit `jt9`, le décodeur FT8 / FT4 |
+| `wsjtx` | Fournit `jt9` (décodage FT8 / FT4) et `ft8code`, `ft4code` (émission) |
 | `git` | Récupérer le code |
 
 `pulseaudio-utils` est indispensable même avec PipeWire : sans lui, l'appli n'a pas de son. La mise à niveau de 24.04 vers 26.04 le désinstalle ; il faut alors le réinstaller.
