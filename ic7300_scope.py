@@ -31,6 +31,7 @@ import carnet
 from qrz import Qrz, QrzError, cw_name
 from rtty_decoder import RttyDecoder, afsk
 from ft8_decoder import Ft4Decoder, Ft8Decoder
+from ft8_encoder import Ft8EncodeError, encode as ft_encode, waveform as ft_waveform
 from cat_server import radio_port
 from memory_window import MemoryWindow
 from sstv_window import SstvWindow, bring_to_front
@@ -75,9 +76,11 @@ LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "carnet.adi")
 RTTY_TX_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME")
                             or os.path.expanduser("~/.cache"),
                             "ic7300-scope", "rtty-emis.wav")
+# message FT8 / FT4 mis en audio avant d'être émis
+FT_TX_FILE = os.path.join(os.path.dirname(RTTY_TX_FILE), "ft-emis.wav")
 # messages pré-enregistrés de chaque mode : fichier, d'origine plus bas
 MACROS_FILES = {kind: os.path.join(os.path.dirname(STATE_FILE), f"messages-{kind}.json")
-                for kind in ("cw", "rtty")}
+                for kind in ("cw", "rtty", "ft")}
 MEMORY_DUMP_FILE = os.path.join(os.path.dirname(STATE_FILE), "memoires-radio-brut.txt")
 # presets du PC : mode, filtre, largeur, puissance, USB MOD Level, décodeur
 PRESETS_FILE = os.path.join(os.path.dirname(STATE_FILE), "presets.json")
@@ -138,13 +141,31 @@ RTTY_MACROS = [
     ("Fin", "Réponse à la fin du correspondant",
      "{dest} DE {call} TNX {dname} FB QSO QSL OK 73 ES GD DX {dest} DE {call} SK"),
 ]
-DEFAULT_MACROS = {"cw": CW_MACROS, "rtty": RTTY_MACROS}
+# messages FT8 / FT4 d'un QSO, dans l'ordre ; {loc4} locator sur 4 caractères,
+# {rpt} report à envoyer (SNR du correspondant)
+FT_MACROS = [
+    ("CQ", "Appel général", "CQ {call} {loc4}"),
+    ("Répondre", "Répondre à un CQ : mon locator", "{dest} {call} {loc4}"),
+    ("Report", "Son report (réponse à mon CQ)", "{dest} {call} {rpt}"),
+    ("R+report", "Report reçu, le sien en retour", "{dest} {call} R{rpt}"),
+    ("RR73", "Reports reçus, fin", "{dest} {call} RR73"),
+    ("73", "Fin du QSO", "{dest} {call} 73"),
+]
+DEFAULT_MACROS = {"cw": CW_MACROS, "rtty": RTTY_MACROS, "ft": FT_MACROS}
 # champs utilisables dans les messages CW et RTTY : {clé}, libellé
 MACRO_FIELDS = [("call", "Mon indicatif"), ("dest", "Correspondant"),
                 ("dname", "Son prénom"), ("gm", "GM/GA/GE"), ("name", "Mon prénom"),
                 ("qth", "QTH"), ("loc", "Locator"), ("rig", "Transceiver"),
-                ("pwr", "Puissance"), ("ant", "Antenne")]
+                ("pwr", "Puissance"), ("ant", "Antenne"),
+                ("loc4", "Locator (4)"), ("rpt", "Report FT")]
 RTTY_DECODERS = ("rtty", "rtty50")
+FT_DECODERS = ("ft8", "ft4")
+FT_SLOTS = {"ft8": 15.0, "ft4": 7.5}       # durée d'un créneau (s)
+FT_START = 0.5                  # le son commence 0,5 s après le début du créneau
+FT_LATE = {"ft8": 2.0, "ft4": 1.0}         # départ en retard encore décodable (s)
+# ligne décodée : heure, SNR, DT, fréquence audio, message
+FT_LINE_RE = re.compile(r"^(\d\d):(\d\d):(\d\d)\s+([+-]?\d+)\s+[+-]?[\d.]+\s+(\d+)\s+(.+?)\s*$")
+GRID_RE = re.compile(r"(?!RR73)[A-R]{2}[0-9]{2}")    # RR73 a la forme d'un locator
 # abréviations de fin de message : texte, sens
 CW_ENDINGS = [
     ("K", "À vous (invitation à émettre)"),
@@ -232,6 +253,7 @@ TX_TIMEOUT = 180                # s : l'émission est coupée au-delà
 CALLSIGN_RE = re.compile(r"(?:[A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-Z]"
                          r"(?:/[A-Z0-9]{1,4})?")
 TX_TEXT_COLOR = "#ef5350"       # texte émis en CW, parmi le texte décodé
+REPLY_BG, REPLY_FG = "#ffd54a", "#101418"     # FT : ligne qui contient mon indicatif
 CW_DIRECT_IDLE = 3.0            # s sans frappe en direct : fin de la ligne émise
 CW_ECHO_DELAY = 0.15            # s entre l'envoi CI-V et la première lettre manipulée
 SLIDER_WIDTH = 150              # px : curseurs de la grille du son
@@ -1838,6 +1860,13 @@ class MainWindow(QtWidgets.QMainWindow):
             line.setVisible(False)
             plot.addItem(line, ignoreBounds=True)
             self.pitch_lines.append(line)
+        self.ft_tx_lines = []
+        for plot in (self.spec_plot, self.wf_plot):
+            line = pg.InfiniteLine(angle=90, pen=pg.mkPen("#ef5350", width=1,
+                                                          style=QtCore.Qt.DashLine))
+            line.setVisible(False)
+            plot.addItem(line, ignoreBounds=True)
+            self.ft_tx_lines.append(line)
         # fréquence sous la souris, dans le coin haut gauche du spectre
         self.cursor_text = pg.TextItem("", color="#ffffff", anchor=(0, 0),
                                        fill=(16, 20, 24, 200))
@@ -2035,9 +2064,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_text.setMaximumBlockCount(500)
         self.decoder_text.setMinimumHeight(70)
         self.decoder_text.setStyleSheet("font: bold 14pt monospace; color: #3ddc84;")
-        self.decoder_text.setVisible(False)
+        # FT8 / FT4 : à droite, seulement le fil de mes QSO (lignes avec mon
+        # indicatif et mes émissions), comme le panneau de droite de WSJT-X
+        self.reply_text = QtWidgets.QPlainTextEdit()
+        self.reply_text.setReadOnly(True)
+        self.reply_text.setMaximumBlockCount(300)
+        self.reply_text.setStyleSheet("font: bold 14pt monospace; color: #3ddc84;")
+        self.reply_text.setPlaceholderText("Réponses : les lignes avec mon indicatif "
+                                           "et mes émissions")
+        self.reply_text.setToolTip("Le fil de mes QSO. Double-clic sur une ligne : "
+                                   "réponse préparée")
+        self.reply_text.setVisible(False)
+        self.decoder_box = QtWidgets.QWidget()
+        box = QtWidgets.QHBoxLayout(self.decoder_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.addWidget(self.decoder_text, stretch=3)
+        box.addWidget(self.reply_text, stretch=2)
+        self.decoder_box.setVisible(False)
         layout.addLayout(decoder_row)
-        layout.addWidget(self.decoder_text, stretch=1)
+        layout.addWidget(self.decoder_box, stretch=1)
 
         # Émission : micro du PC ou fichier, envoyés à la radio par l'USB
         self.radio_sink = args.sink
@@ -2169,11 +2214,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cw_echo_timer.setInterval(20)
         self.cw_echo_timer.timeout.connect(self.show_cw_echo)
         self.tx_text_label = QtWidgets.QLabel("CW")
+        # FT8 / FT4 : créneau, répétition et fréquence d'émission
+        self.ft_parity = QtWidgets.QComboBox()
+        self.ft_parity.addItem("Pair", 0)
+        self.ft_parity.addItem("Impair", 1)
+        self.ft_parity.setToolTip("Créneau d'émission : pair (FT8 : 00 et 30 s) ou impair "
+                                  "(15 et 45 s). Toujours l'inverse du correspondant ; "
+                                  "le double-clic sur une ligne décodée le règle")
+        self.ft_repeat = QtWidgets.QCheckBox("Répéter")
+        self.ft_repeat.setChecked(True)
+        self.ft_repeat.setToolTip(
+            "CQ ou appel répété à chaque cycle jusqu'à Stop (Échap). Les réponses\n"
+            "partent toutes seules ; l'appel s'arrête si la station appelée répond\n"
+            "à une autre. RR73 et 73 ne partent qu'une fois, puis le CQ reprend.")
+        self.ft_tx_hz = 1500
+        self.ft_tx_label = QtWidgets.QLabel()
+        self.ft_tx_label.setToolTip("Fréquence audio d'émission : clic sur le spectre "
+                                    "pour la changer (ligne rouge)")
+        self.ft_armed = None            # message en attente : dict, ou None
+        self.ft_last_slot = None        # créneau de la dernière émission
+        self.ft_report = "-10"          # report à envoyer
+        self.ft_qso = {}                # QSO en cours : call, grid, sent, rcvd, from_cq
+        self.ft_cq = None               # (CQ, créneau) à relancer après un QSO
+        self.ft_timer = QtCore.QTimer(self)
+        self.ft_timer.setInterval(50)
+        self.ft_timer.timeout.connect(self.check_ft)
         cw_row.addWidget(self.tx_text_label)
         cw_row.addWidget(self.cw_text, stretch=1)
         cw_row.addWidget(self.cw_speed)
         cw_row.addWidget(self.cw_hand)
         cw_row.addWidget(self.cw_direct)
+        cw_row.addWidget(self.ft_parity)
+        cw_row.addWidget(self.ft_repeat)
+        cw_row.addWidget(self.ft_tx_label)
         cw_row.addWidget(self.cw_send_button)
         cw_row.addWidget(self.cw_stop_button)
         # indicatif et messages tout faits
@@ -2211,6 +2284,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.dest_name.setPlaceholderText("Son prénom")
         self.dest_name.setMaximumWidth(120)
         CallsignClick(self.decoder_text, self.set_correspondent)
+        CallsignClick(self.reply_text, self.set_correspondent)
         self.qrz = None                     # session qrz.com, ouverte au besoin
         self.qrz_asked = ""                 # dernier indicatif cherché
         self.qrz_found.connect(self.on_qrz_found)
@@ -2280,7 +2354,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.log_results = {}           # indicatif → résultats des envois
         self.log_sent.connect(self.on_log_sent)
         # juste sous le texte décodé : réception puis réponse
-        index = layout.indexOf(self.decoder_text) + 1
+        index = layout.indexOf(self.decoder_box) + 1
         layout.insertLayout(index, cw_row)
         layout.insertLayout(index + 1, macro_row)
         self._cw_enable(False)
@@ -2305,6 +2379,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_combo.currentIndexChanged.connect(self.on_decoder_changed)
         self.decoder_auto.toggled.connect(self.on_decoder_auto)
         decoder_clear.clicked.connect(self.decoder_text.clear)
+        decoder_clear.clicked.connect(self.reply_text.clear)
         self._set_decoder_led(False, False)
 
         self.view = None
@@ -2364,6 +2439,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for item in self.tuned_lines + self.passbands:
             item.setVisible(rf)
         self._show_pitch_lines()
+        self._show_ft_tx_line()
         self.avg = None
         if rf:
             # niveaux du scope de la radio : 0 à 160
@@ -2465,6 +2541,7 @@ class MainWindow(QtWidgets.QMainWindow):
             line.setPos(f)
         for band in self.passbands:
             band.setRegion((f + low, f + high))
+        self._show_ft_tx_line()
 
     def on_floor_changed(self, value):
         if not self.auto_check.isChecked():
@@ -2660,25 +2737,33 @@ class MainWindow(QtWidgets.QMainWindow):
                        *self.cw_macro_buttons):
             widget.setEnabled(on)
         self.cw_text.setToolTip("" if on else "Passer la radio en CW pour émettre, "
-                                "ou en LSB-D/USB-D avec le décodeur RTTY")
+                                "ou en LSB-D/USB-D avec le décodeur RTTY, "
+                                "ou en USB-D avec le décodeur FT8 ou FT4")
 
     def _rtty_tx(self):
         """Le texte part en RTTY : décodeur RTTY et radio en BLU (AFSK)."""
         return (self.decoder_combo.currentData() in RTTY_DECODERS
                 and base_mode(self.mode_combo.currentText()) in ("LSB", "USB"))
 
+    def _ft_tx(self):
+        """Le texte part en FT8 / FT4 : décodeur FT et radio en USB."""
+        return (self.decoder_combo.currentData() in FT_DECODERS
+                and base_mode(self.mode_combo.currentText()) == "USB")
+
     def _update_tx_text(self):
-        """Ligne d'émission en CW (manipulateur de la radio) ou en RTTY."""
+        """Ligne d'émission en CW (manipulateur de la radio), en RTTY ou en FT."""
         rtty = self._rtty_tx()
+        ft = self._ft_tx()
         cw = self.mode_combo.currentText() in ("CW", "CW-R")
-        self._cw_enable(getattr(self, "civ", None) is not None and (cw or rtty))
-        self.tx_text_label.setText("RTTY" if rtty else "CW")
+        self._cw_enable(getattr(self, "civ", None) is not None and (cw or rtty or ft))
+        self.tx_text_label.setText(
+            "RTTY" if rtty else self.decoder_combo.currentText() if ft else "CW")
         # mode de la radio qu'il faut pour répondre avec ce décodeur
         # (FT8 et FT4 : toujours en USB, en mode data)
-        ft = (self.mode_combo.currentText() != "USB-D", ("USB-D",))
+        ft_hint = (self.mode_combo.currentText() != "USB-D", ("USB-D",))
         hint = {"rtty": (not self.mode_combo.currentText().endswith("-D"), ("USB-D", "LSB-D")),
                 "cw": (not cw, ("CW", "CW-R")),
-                "ft8": ft, "ft4": ft}.get(self.decoder_combo.currentData())
+                "ft8": ft_hint, "ft4": ft_hint}.get(self.decoder_combo.currentData())
         self.mode_hint.setVisible(bool(hint and hint[0]))
         if hint:
             # chaque mode est un lien : un clic y met la radio
@@ -2687,17 +2772,225 @@ class MainWindow(QtWidgets.QMainWindow):
             self.mode_hint.setText(f"passer en {links}")
         self.cw_text.setPlaceholderText(
             "Texte à émettre en RTTY sur les tonalités du décodeur, Entrée pour envoyer"
-            if rtty else "Texte à émettre en CW, Entrée pour envoyer "
+            if rtty else
+            "Message à émettre au prochain créneau choisi, Entrée pour l'armer "
+            "(double-clic sur une ligne décodée : réponse émise toute seule)"
+            if ft else "Texte à émettre en CW, Entrée pour envoyer "
             "(^AR, ^SK… pour les signes liés)")
-        self.cw_speed.setVisible(not rtty)
-        self.cw_hand.setVisible(not rtty)
-        self.cw_direct.setVisible(not rtty)
-        kind = "rtty" if rtty else "cw"
+        for widget in (self.cw_speed, self.cw_hand, self.cw_direct):
+            widget.setVisible(not (rtty or ft))
+        for widget in (self.ft_parity, self.ft_repeat, self.ft_tx_label):
+            widget.setVisible(ft)
+        self.cw_ending.setVisible(not ft)
+        self._show_ft_tx_line()
+        kind = "rtty" if rtty else "ft" if ft else "cw"
         if kind != self.macro_kind:
             self.macro_kind = kind
             self._build_cw_macros()
             self.edit_macros_button.setToolTip(
                 f"Modifier les messages {kind.upper()} pré-enregistrés")
+
+    def _show_ft_tx_line(self):
+        """Ligne rouge : fréquence d'émission FT, en Hz audio ou en kHz RF."""
+        if not hasattr(self, "ft_tx_label"):
+            return                      # pendant la construction de la fenêtre
+        self.ft_tx_label.setText(f"TX {self.ft_tx_hz} Hz")
+        x = self.ft_tx_hz
+        visible = self._ft_tx()
+        if self.view == "rf":
+            sign = {"USB": 1, "LSB": -1}.get(base_mode(self.mode_combo.currentText()))
+            if self.freq_hz is None or sign is None:
+                visible = False
+            else:
+                x = (self.freq_hz + sign * self.ft_tx_hz) / 1000
+        for line in self.ft_tx_lines:
+            line.setVisible(visible)
+            line.setPos(x)
+
+    def set_ft_tx_hz(self, hz):
+        """Fréquence audio d'émission FT, choisie au clic sur le spectre."""
+        self.ft_tx_hz = int(min(max(round(hz), 200), 2900))
+        self._show_ft_tx_line()
+        if self.ft_armed:
+            self._ft_make_audio()       # le message armé part sur la nouvelle fréquence
+        self.statusBar().showMessage(f"Émission FT sur {self.ft_tx_hz} Hz")
+
+    def arm_ft(self, text):
+        """Message FT8 / FT4 armé : il part au prochain créneau choisi."""
+        message = " ".join(text.upper().split())
+        mode = self.decoder_combo.currentData()
+        if not message or not self.civ:
+            return
+        try:
+            tones = ft_encode(message, mode)
+        except Ft8EncodeError as e:
+            self.statusBar().showMessage(f"{mode.upper()} : {e}")
+            return
+        self.ft_armed = {"message": message, "mode": mode, "tones": tones,
+                         "parity": self.ft_parity.currentData(), "since": time.time()}
+        if message.startswith("CQ "):
+            # relancé tout seul à la fin de chaque QSO venu de ce CQ
+            self.ft_cq = (message, self.ft_parity.currentIndex())
+        if not self._ft_make_audio():
+            return
+        # un message déjà émis dans ce créneau ne bloque pas le suivant
+        self.ft_last_slot = None
+        self.cw_text.clear()
+        self.ft_timer.start()
+        slot = FT_SLOTS[mode]
+        now = time.time()
+        index = int(now // slot)
+        late = now - index * slot
+        if index % 2 == self.ft_armed["parity"] and late < FT_LATE[mode]:
+            when = "tout de suite"
+        else:
+            nxt = index + 1 if (index + 1) % 2 == self.ft_armed["parity"] else index + 2
+            when = "à " + time.strftime("%H:%M:%S", time.gmtime(nxt * slot)) + " UTC"
+        self.statusBar().showMessage(f"{mode.upper()} : « {message} » {when}, "
+                                     f"{self.ft_tx_hz} Hz (Échap pour annuler)")
+
+    def _ft_make_audio(self):
+        armed = self.ft_armed
+        samples = ft_waveform(armed["tones"], self.ft_tx_hz, armed["mode"], RATE)
+        try:
+            os.makedirs(os.path.dirname(FT_TX_FILE), exist_ok=True)
+            with wave.open(FT_TX_FILE, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(RATE)
+                w.writeframes((samples * 32767).astype(np.int16).tobytes())
+        except OSError as e:
+            self.disarm_ft(f"FT impossible : {e}")
+            return False
+        return True
+
+    def disarm_ft(self, reason=None):
+        self.ft_armed = None
+        self.ft_timer.stop()
+        if reason:
+            self.statusBar().showMessage(reason)
+
+    def check_ft(self):
+        """Toutes les 50 ms : le message armé part au début de son créneau."""
+        armed = self.ft_armed
+        if not armed or self.tx_active:
+            return
+        if not self._ft_tx() or armed["mode"] != self.decoder_combo.currentData():
+            self.disarm_ft("FT : émission annulée (décodeur ou mode changé)")
+            return
+        slot = FT_SLOTS[armed["mode"]]
+        now = time.time()
+        index = int(now // slot)
+        late = now - index * slot
+        if (index % 2 != armed["parity"] or late >= FT_LATE[armed["mode"]]
+                or index == self.ft_last_slot):
+            return
+        self.ft_last_slot = index
+        # la radio passe en émission puis le son part 400 ms après (start_tx) :
+        # on la déclenche juste après le début du créneau pour un son à +0,5 s
+        if late < FT_START - 0.4:
+            QtCore.QTimer.singleShot(int((FT_START - 0.4 - late) * 1000), self._ft_go)
+        else:
+            self._ft_go()
+
+    def _ft_go(self):
+        armed = self.ft_armed
+        if not armed or self.tx_active:
+            return
+        self.tx_once = FT_TX_FILE
+        self.tx_digital = True
+        self.ptt_button.setChecked(True)
+        if not self.tx_active:
+            self.disarm_ft()
+            return
+        # le message émis, en rouge parmi les messages décodés
+        cursor = self.decoder_text.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        if not cursor.atBlockStart():
+            cursor.insertText("\n", QtGui.QTextCharFormat())
+        sent = QtGui.QTextCharFormat()
+        sent.setForeground(QtGui.QColor(TX_TEXT_COLOR))
+        now = time.strftime("%H:%M:%S", time.gmtime())
+        tx_line = f"{now}  TX     {self.ft_tx_hz:4d}  {armed['message']}"
+        cursor.insertText(tx_line, sent)
+        self._add_reply(tx_line, TX_TEXT_COLOR)
+        cursor.insertText("\n", QtGui.QTextCharFormat())
+        self.decoder_text.setTextCursor(cursor)
+        self.decoder_text.ensureCursorVisible()
+        words = armed["message"].split()
+        if len(words) == 3 and re.fullmatch(r"R?[+-]\d\d", words[2]):
+            self.ft_qso["sent"] = words[2].lstrip("R")
+        # RR73 et 73 closent le QSO : une seule fois, puis le CQ reprend
+        if words[-1] in ("RR73", "73"):
+            self.disarm_ft()
+            self._ft_qso_done()
+        elif not self.ft_repeat.isChecked():
+            self.disarm_ft()
+
+    def ft_prepare(self, call, line):
+        """Double-clic sur une ligne FT décodée : correspondant, créneau et
+        message suivant du QSO, armé aussitôt (il part au prochain créneau)."""
+        m = FT_LINE_RE.match(line.strip())
+        my = self.callsign.text().strip().upper()
+        if not m or not my:
+            return False
+        _, _, sec, snr, _, message = m.groups()
+        words = [w.strip("<>") for w in message.split()]     # <indicatif abrégé>
+        mode = self.decoder_combo.currentData()
+        # leur créneau, et le nôtre à l'opposé
+        their = round(int(sec) / FT_SLOTS[mode]) % 2
+        report = f"{min(max(int(snr), -30), 30):+03d}"
+        if words[0] == "CQ":
+            # CQ [DX|POTA…] indicatif [locator]
+            calls = [w for w in words[1:] if CALLSIGN_RE.fullmatch(w)]
+            if not calls:
+                return False
+            dest, step = calls[0], "{dest} {call} {loc4}"
+        elif words[0] == my and len(words) >= 2:
+            dest = words[1]
+            last = words[2] if len(words) > 2 else ""
+            if last in ("RR73", "RRR"):
+                step = "{dest} {call} 73"
+            elif last == "73":
+                step = None             # QSO fini : plus rien à envoyer
+            elif re.fullmatch(r"R[+-]\d\d", last):
+                step = "{dest} {call} RR73"
+                self.ft_qso["rcvd"] = last[1:]
+            elif re.fullmatch(r"[+-]\d\d", last):
+                step = "{dest} {call} R{rpt}"
+                self.ft_qso["rcvd"] = last
+            else:                       # il répond à mon CQ avec son locator
+                step = "{dest} {call} {rpt}"
+        else:
+            # QSO d'autres stations : on appelle celle qui émet (2e indicatif)
+            dest = call if call != my else words[1] if len(words) > 1 else call
+            step = "{dest} {call} {loc4}"
+        if not CALLSIGN_RE.fullmatch(dest) or dest == my:
+            return False
+        if dest != self.ft_qso.get("call"):
+            self.ft_qso = {"call": dest}
+            self.dest_name.clear()
+        grid = words[-1] if GRID_RE.fullmatch(words[-1]) else None
+        if grid:
+            self.ft_qso["grid"] = grid
+        self.ft_report = report
+        self.dest_call.setText(dest)
+        self.lookup_name(dest)
+        self.ft_parity.setCurrentIndex(1 - their)
+        if step is None:
+            self.statusBar().showMessage(f"QSO avec {dest} terminé : Noter le QSO")
+            self.disarm_ft()
+            self._ft_qso_done()
+            return True
+        values = self.macro_values()
+        if "{loc4}" in step and not values["loc4"]:
+            self.statusBar().showMessage("Indiquer d'abord le champ Locator de Ma station…")
+            self.on_station()
+            return True
+        # émission automatique : comme Entrée sur le message préparé
+        self.arm_ft(fill_macro(step, values))
+        self.cw_text.setFocus()
+        return True
 
     def on_mode_hint(self, mode):
         """Lien de la ligne Décodeur : la radio passe dans le mode pour émettre."""
@@ -2718,6 +3011,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.set_key_speed(round((wpm - 6) * 255 / 42))
 
     def on_cw_send(self):
+        if self._ft_tx():
+            self.arm_ft(self.cw_text.text())
+            return
         if self._rtty_tx():
             self.send_rtty(self.cw_text.text())
             return
@@ -2868,8 +3164,10 @@ class MainWindow(QtWidgets.QMainWindow):
         held, self.cw_echo_held = self.cw_echo_held.lstrip(), ""
         cursor.insertText(held, QtGui.QTextCharFormat())
 
-    def set_correspondent(self, call):
+    def set_correspondent(self, call, line=""):
         """Indicatif pris dans le texte décodé (double-clic)."""
+        if self._ft_tx() and self.ft_prepare(call, line):
+            return
         if call == self.callsign.text().strip().upper():
             return                          # le sien
         if call != self.dest_call.text().strip():
@@ -2976,6 +3274,7 @@ class MainWindow(QtWidgets.QMainWindow):
                    "dest": ("l'indicatif du correspondant", self.dest_call)}
         for key, label, _ in STATION_FIELDS:
             missing[key] = (f"le champ {label} de Ma station…", None)
+        missing["loc4"] = ("le champ Locator de Ma station…", None)
         for key, (label, field) in missing.items():
             if "{" + key + "}" in text and not values[key]:
                 self.statusBar().showMessage(f"Indiquer d'abord {label}")
@@ -3025,7 +3324,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 "call": self.callsign.text().strip(),
                 "dest": self.dest_call.text().strip(),
                 "dname": self.dest_name.text().strip(),
-                "gm": "GM" if hour < 12 else "GA" if hour < 18 else "GE"}
+                "gm": "GM" if hour < 12 else "GA" if hour < 18 else "GE",
+                "loc4": self.station.get("loc", "")[:4].upper(),
+                "rpt": self.ft_report}
 
     def on_cw_ending(self, index):
         ending = self.cw_ending.itemData(index)
@@ -3047,6 +3348,9 @@ class MainWindow(QtWidgets.QMainWindow):
         hz = self.freq_hz or 0
         mode, submode = carnet.adif_mode(self.mode_combo.currentText(),
                                          self.decoder_combo.currentData())
+        # QSO FT8 / FT4 : reports et locator relevés pendant le QSO
+        ft = (self.ft_qso if self.ft_qso.get("call") == self.dest_call.text().strip()
+              else {})
         dialog = QtWidgets.QDialog(self)
         dialog.setWindowTitle("Noter le QSO")
         form = QtWidgets.QFormLayout(dialog)
@@ -3059,9 +3363,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 ("name", "Prénom", self.dest_name.text().strip()),
                 ("freq", "Fréquence (MHz)", f"{hz / 1e6:.6f}" if hz else ""),
                 ("mode", "Mode", mode), ("submode", "Sous-mode", submode),
-                ("rst_sent", "Report envoyé", carnet.default_report(mode)),
-                ("rst_rcvd", "Report reçu", carnet.default_report(mode)),
-                ("gridsquare", "Locator", ""), ("comment", "Commentaire", "")):
+                ("rst_sent", "Report envoyé", ft.get("sent", carnet.default_report(mode))),
+                ("rst_rcvd", "Report reçu", ft.get("rcvd", carnet.default_report(mode))),
+                ("gridsquare", "Locator", ft.get("grid", "")),
+                ("comment", "Commentaire", "")):
             field = QtWidgets.QLineEdit(value)
             if key != "comment":
                 field.textEdited.connect(lambda text, field=field: self._upper(field, text))
@@ -3168,8 +3473,10 @@ class MainWindow(QtWidgets.QMainWindow):
             QtCore.QUrl(f"https://www.qrz.com/db/{QtCore.QUrl.toPercentEncoding(call).data().decode()}"))
 
     def on_cw_stop(self):
+        if self.ft_armed:
+            self.disarm_ft("FT : émission annulée")
         if self.tx_once and self.tx_active:
-            self.stop_tx("RTTY arrêté")
+            self.stop_tx("Émission arrêtée")
         elif self.civ:
             self.civ.stop_cw()
         if self.cw_echo_timer.isActive():
@@ -3778,6 +4085,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if x is None:
             return
         decoder = self.decoder_combo.currentData()
+        if decoder in FT_DECODERS:
+            # FT8 / FT4 : le clic choisit la fréquence audio d'émission
+            audio = x if self.view == "audio" else self._audio_offset(x * 1000)
+            if audio is not None:
+                self.set_ft_tx_hz(audio)
+                return
         if self.view == "audio":
             if decoder:
                 self._set_decoder_pitch(x)
@@ -3815,7 +4128,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if decoder:
             decoder.auto_pitch = self.decoder_auto.isChecked()
         self.audio.decoder = decoder
-        self.decoder_text.setVisible(decoder is not None)
+        self.decoder_box.setVisible(decoder is not None)
+        self.reply_text.setVisible(name in FT_DECODERS)
         self.decoder_auto.setToolTip({
             "cw": "Cherche la note CW la plus forte entre 300 et 1200 Hz. "
                   "Clic sur le spectre audio pour la choisir.",
@@ -3831,7 +4145,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.rtty_invert.setChecked(decoder.inverted)
         self.decoder_auto.setVisible(name in ("cw", *RTTY_DECODERS))
         # FT8/FT4 : plusieurs lignes par créneau, il faut de la place
-        self.decoder_text.setFixedHeight(150 if name in ("ft8", "ft4") else 70)
+        self.decoder_box.setFixedHeight(150 if name in FT_DECODERS else 70)
         if name == "ft4" and self.decoder_text.document().isEmpty():
             self.decoder_text.setPlainText(
                 "UTC      dB   DT Freq  Message  (14.080, 7.0475… en USB)\n")
@@ -3893,9 +4207,77 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         cursor = self.decoder_text.textCursor()
         cursor.movePosition(QtGui.QTextCursor.End)
-        cursor.insertText(text, QtGui.QTextCharFormat())   # couleur du texte décodé
+        my = self.callsign.text().strip().upper()
+        if self.decoder_combo.currentData() in FT_DECODERS and my:
+            mine = QtGui.QTextCharFormat()
+            mine.setBackground(QtGui.QColor(REPLY_BG))
+            mine.setForeground(QtGui.QColor(REPLY_FG))
+            for line in text.splitlines(keepends=True):
+                # indicatif seul, ou entre <> quand il est abrégé (hachage)
+                if my in (w.strip("<>") for w in line.upper().split()):
+                    cursor.insertText(line.rstrip("\n"), mine)
+                    cursor.insertText(line[len(line.rstrip("\n")):], QtGui.QTextCharFormat())
+                    self._add_reply(line.rstrip("\n"))
+                    words = [w.strip("<>") for w in line.split()]
+                    if len(words) > 5:
+                        self.statusBar().showMessage(f"Réponse de {words[5]} : "
+                                                     + " ".join(words[4:]))
+                else:
+                    cursor.insertText(line, QtGui.QTextCharFormat())
+                self._ft_watch(line, my)
+        else:
+            cursor.insertText(text, QtGui.QTextCharFormat())   # couleur du texte décodé
         self.decoder_text.setTextCursor(cursor)
         self.decoder_text.ensureCursorVisible()
+
+    def _ft_watch(self, line, my):
+        """Émission en cours (CQ ou QSO) : réponse automatique à qui me répond,
+        arrêt si la station appelée répond à une autre."""
+        armed = self.ft_armed
+        m = FT_LINE_RE.match(line.strip())
+        if not armed or not m:
+            return
+        words = [w.strip("<>") for w in m.group(6).split()]
+        if len(words) < 2:
+            return
+        to, sender = words[0], words[1]
+        target = armed["message"].split()[0]
+        if target == "CQ":
+            if to == my:
+                # une station répond à mon CQ : le QSO commence tout seul
+                self.ft_prepare(sender, line)
+                self.ft_qso["from_cq"] = True
+        elif sender == target:
+            if to == my:
+                from_cq = self.ft_qso.get("from_cq")
+                self.ft_prepare(sender, line)       # étape suivante, émise toute seule
+                if from_cq:
+                    self.ft_qso["from_cq"] = True
+            elif to != "CQ":
+                self.disarm_ft(f"{target} répond à {to} : appel arrêté")
+
+    def _ft_qso_done(self):
+        """QSO fini : le CQ qui l'a amené reprend au cycle suivant."""
+        if self.ft_qso.get("from_cq") and self.ft_cq and self._ft_tx():
+            message, parity = self.ft_cq
+            self.ft_parity.setCurrentIndex(parity)
+            call = self.ft_qso.get("call", "")
+            self.arm_ft(message)
+            self.statusBar().showMessage(f"QSO avec {call} terminé (Noter le QSO) : "
+                                         f"« {message} » relancé")
+
+    def _add_reply(self, line, color=None):
+        """Une ligne au fil de mes QSO (panneau de droite) ; color : texte émis."""
+        cursor = self.reply_text.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        if not cursor.atBlockStart():
+            cursor.insertText("\n", QtGui.QTextCharFormat())
+        fmt = QtGui.QTextCharFormat()
+        if color:
+            fmt.setForeground(QtGui.QColor(color))
+        cursor.insertText(line, fmt)
+        self.reply_text.setTextCursor(cursor)
+        self.reply_text.ensureCursorVisible()
 
     def on_decoder_state(self, info, pitch, signal, active):
         if self.audio.decoder is None:
@@ -4263,7 +4645,7 @@ class CwMacroDialog(QtWidgets.QDialog):
 
 
 def callsign_at(edit, pos):
-    """Indicatif sous le point pos d'une zone de texte, ou None."""
+    """(indicatif sous le point pos d'une zone de texte ou None, sa ligne)."""
     cursor = edit.cursorForPosition(pos)
     line, i = cursor.block().text().upper(), cursor.positionInBlock()
     start, end = i, i
@@ -4272,11 +4654,11 @@ def callsign_at(edit, pos):
     while end < len(line) and (line[end].isalnum() or line[end] == "/"):
         end += 1
     word = line[start:end].strip("/")
-    return word if CALLSIGN_RE.fullmatch(word) else None
+    return (word if CALLSIGN_RE.fullmatch(word) else None), line
 
 
 class CallsignClick(QtCore.QObject):
-    """Double-clic sur un indicatif d'une zone de texte : callback(indicatif)."""
+    """Double-clic sur un indicatif d'une zone de texte : callback(indicatif, ligne)."""
 
     def __init__(self, edit, callback):
         super().__init__(edit)
@@ -4285,9 +4667,9 @@ class CallsignClick(QtCore.QObject):
 
     def eventFilter(self, obj, event):
         if event.type() == QtCore.QEvent.MouseButtonDblClick:
-            call = callsign_at(self.edit, event.pos())
+            call, line = callsign_at(self.edit, event.pos())
             if call:
-                self.callback(call)
+                self.callback(call, line)
                 return True
         return False
 
