@@ -85,8 +85,9 @@ De haut en bas :
 │ Fréquence  MHz  [pas]  MODE  FIL1 FIL2 FIL3 ═largeur═      │  VFO   │ Bandes   │
 │ Aller à [_____]                      UTC hh:mm:ss  Locale  │ bouton │ 160m 80m │
 │ S-mètre ▮▮▮▮▮▮▮▮▮▯▯▯                                       │ A B    │  …       │
-│ Audio dBFS ▮▮▮▮▯▯▯                                         │ A/B A=B│ Mémoires…│
-│ ROS ▮▯▯  COMP ▮▯▯   ALC ▮▯▯  Id ▮▯▯                        │ TUNE   │ SSTV…    │
+│ Audio dBFS ▮▮▮▮▯▯▯            ALC % ▮▮▯▯▯                  │
+│ Entrée TX ▮▮▯▯  Sortie TX ▮▮▮▯                             │ A/B A=B│ Mémoires…│
+│ ROS ▮▯▯  COMP ▮▯▯   Vd ▮▮▮▯  Id ▮▯▯                        │ TUNE   │ SSTV…    │
 │                                                            │ ATU ⏻  │ Presets… │
 │                                                            │        │ Enreg.   │
 │                                                            │        │ ÉMETTRE  │
@@ -96,7 +97,7 @@ De haut en bas :
 ├────────────────────────────────────────────────────────────────────────────────┤
 │ Vue  Largeur  Niveaux auto  Plancher  Plage                                    │
 │ RX : Sortie · Muet · Volume PC · AF radio · RF · SQL                           │
-│ TX : Entrée · Niveau PC · Puissance · Réglage ALC · Po                         │
+│ TX : Entrée · Niveau PC · Puissance · Réglage ALC · COMP · Po                         │
 ├────────────────────────────────────────────────────────────────────────────────┤
 │ Décodeur [▼]  Calage auto  Inverser  ●  infos  rappel du mode  Effacer  Grande │
 │ Texte décodé (vert) et texte émis (rouge)                                      │
@@ -163,12 +164,15 @@ L'heure **UTC** (pour FT8 et le carnet) et l'heure **locale** s'affichent à dro
 |---|---|
 | **S-mètre** | De S0 à S9+60 dB, rouge au-dessus de S9 |
 | **Audio dBFS** | Niveau du son reçu par le PC, rouge au-dessus de −6 dBFS |
+| **Entrée TX** | Niveau envoyé à la radio, Niveau PC compris, en dBFS, rouge au-dessus de −6 : le micro en continu (pour le régler avant d'émettre), ou le fichier pendant l'émission |
+| **Sortie TX** | À droite de l'Entrée TX : puissance HF émise par la radio, en W (Po), rouge au-delà de 100 W |
 | **ROS** | Rapport d'ondes stationnaires, en émission |
-| **COMP dB** | Compression du processeur de parole |
-| **ALC %** | ALC en pourcentage de sa zone : rester sous 100 |
+| **COMP dB** | Compression du processeur de parole, en émission BLU à la voix, quand le bouton **COMP** est en service ; sinon il reste à zéro |
+| **ALC %** | À droite d'Audio dBFS : ALC en pourcentage de sa zone, en émission. Rester sous 100 |
+| **Vd** | Tension d'alimentation de la radio, en V, lue en permanence (13,8 V nominal). Une forte chute en émission signale une alimentation ou des câbles trop justes |
 | **Id** | Courant de l'amplificateur, en ampères |
 
-En émission, la puissance de sortie **Po** (en %) s'affiche au bout de la ligne TX. Les barres d'émission se remettent à zéro à la fin de chaque émission.
+En émission, la puissance de sortie s'affiche aussi en % (**Po**) au bout de la ligne TX. Les barres d'émission se remettent à zéro à la fin de chaque émission.
 
 ---
 
@@ -181,7 +185,7 @@ En émission, la puissance de sortie **Po** (en %) s'affiche au bout de la ligne
 | **A=B** | Copie le VFO actif dans l'autre |
 | Ligne grise sous les boutons | Fréquence et mode de l'autre VFO |
 | **TUNE** | Lance un accord de la boîte interne. La radio émet une porteuse ; le bouton passe en rouge « TUNE… » pendant l'accord |
-| **ATU** | Met la boîte d'accord interne en service ou hors service |
+| **ATU** | Met la boîte d'accord interne en service (bouton vert) ou hors service |
 | **⏻ ON / OFF** | Met la radio en marche ou l'arrête. L'arrêt demande confirmation et coupe une émission en cours |
 
 La radio ne dit pas quel VFO est actif : le logiciel affiche « VFO ? » jusqu'au premier clic sur A, B ou A/B.
@@ -318,9 +322,11 @@ La sortie USB de la radio ignore le squelch : le logiciel coupe lui-même l'éco
 | Réglage | Effet |
 |---|---|
 | **Entrée** | Ce qui part à l'émission : un micro du PC, ou **Fichier audio** (bouton **Choisir…** : WAV, FLAC, OGG) |
+| **Entrée TX** (bargraph, en haut) | Niveau qui arrive à la radio, **Niveau PC compris** : avec un micro, en continu, même hors émission (parler et régler pour que les crêtes, trait jaune, restent sous le rouge) ; avec un fichier, pendant l'émission |
 | **Niveau PC** | Volume du son envoyé à la radio. Le régler pour que l'ALC bouge sans dépasser |
 | **Puissance** | Puissance d'émission de la radio, en W |
 | **Réglage ALC** | Gain de l'entrée USB de la radio (menu USB MOD Level). En émission, le monter jusqu'à ce que l'ALC bouge, sans rester au maximum |
+| **COMP** (bouton, vert en service) et curseur | Compresseur de parole de la radio, niveau de 0 à 10 comme dans son menu. Il ne joue qu'en BLU, à la voix : plus de puissance moyenne. Viser 10 à 20 dB sur le bargraph COMP en parlant |
 | **Po** | Puissance de sortie mesurée, pendant l'émission |
 
 ### Bouton ÉMETTRE
