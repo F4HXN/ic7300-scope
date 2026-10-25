@@ -111,6 +111,8 @@ De haut en bas :
 
 Les curseurs qui dépendent de la radio (AF, RF, SQL, puissance, USB MOD, largeur, vitesse CW) restent grisés tant que la radio n'a pas répondu.
 
+En **USB** ou **LSB** (phonie), ou avec le décodeur **Aucun**, les deux lignes du bas (texte à émettre, indicatif, correspondant et messages) sont masquées : seuls **Noter le QSO** et **Carnet…** restent. Elles reviennent avec un décodeur, en CW, CW-R, USB-D et LSB-D.
+
 ---
 
 ## 4. Fréquence, mode et filtres
@@ -366,6 +368,10 @@ La ligne **Décodeur** choisit le décodeur. Le texte décodé s'affiche en vert
 | Rappel du mode | En italique, le mode qu'il faut pour émettre avec ce décodeur. **Un clic sur le mode y met la radio** |
 | **Effacer** | Vide le texte |
 | **Grande fenêtre** | Le texte décodé en grand dans une fenêtre à part (F11 : plein écran, Échap pour en sortir) |
+
+Avec le décodeur **Aucun**, il n'y a pas de texte : la zone de texte, **Effacer** et **Grande fenêtre** sont masqués.
+
+Choisir **RTTY 45**, **RTTY 50 météo**, **FT8** ou **FT4** met la radio en **USB-D** toute seule (le RTTY garde LSB-D s'il y est déjà), et choisir **CW** la met en **CW** (elle garde CW-R si elle y est). Pas pendant une émission.
 
 La **ligne verte pointillée** sur le spectre marque la note du décodeur (CW, RTTY). En vue RF, elle se place sur la fréquence radio correspondante.
 
