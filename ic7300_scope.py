@@ -159,6 +159,10 @@ MACRO_FIELDS = [("call", "Mon indicatif"), ("dest", "Correspondant"),
                 ("pwr", "Puissance"), ("ant", "Antenne"),
                 ("loc4", "Locator (4)"), ("rpt", "Report FT")]
 RTTY_DECODERS = ("rtty", "rtty50")
+# interrupteurs de réception de la radio : code (commande CI-V sur 2 octets,
+# 0x1100 pour l'atténuateur qui n'a pas de sous-commande)
+SW_NB, SW_NR, SW_AN, SW_MN = 0x1622, 0x1640, 0x1641, 0x1648
+SW_PREAMP, SW_ATT, SW_IPPLUS = 0x1602, 0x1100, 0x1A07
 FT_DECODERS = ("ft8", "ft4")
 FT_SLOTS = {"ft8": 15.0, "ft4": 7.5}       # durée d'un créneau (s)
 FT_START = 0.5                  # le son commence 0,5 s après le début du créneau
@@ -669,6 +673,7 @@ class CivReader(QtCore.QThread):
     af_gain = QtCore.pyqtSignal(int)            # volume de la radio, 0 à 255
     level = QtCore.pyqtSignal(int, int)         # réglage 0x14 (RF 0x02, SQL 0x03, COMP 0x0E), 0 à 255
     compressor = QtCore.pyqtSignal(bool)        # compresseur de parole en service
+    switch = QtCore.pyqtSignal(int, int)        # NB, NR, notch, préampli, ATT, IP+ : code, valeur
     tuner = QtCore.pyqtSignal(int)              # boîte d'accord : 0 arrêt, 1 marche, 2 accord
     filter = QtCore.pyqtSignal(int)             # filtre FIL1, FIL2 ou FIL3 (1 à 3)
     filter_width = QtCore.pyqtSignal(int)       # largeur du filtre, valeur 0x1A 0x03
@@ -846,6 +851,13 @@ class CivReader(QtCore.QThread):
             self._hand_stop.clear()
             self._hand_thread = threading.Thread(target=self._hand_key, daemon=True)
             self._hand_thread.start()
+
+    def set_switch(self, code, value):
+        """NB, NR, notch auto/manuel, préampli, atténuateur ou IP+ (codes SW_*)."""
+        if code == SW_ATT:
+            self._commands.put((0x11, value))
+        else:
+            self._commands.put((code >> 8, code & 0xFF, value))
 
     def set_compressor(self, on):
         """Compresseur de parole (BLU) en service ou non."""
@@ -1081,7 +1093,10 @@ class CivReader(QtCore.QThread):
                            (0x14, 0x01), (0x14, 0x02), (0x14, 0x03), (0x14, 0x0A), (0x1C, 0x00),
                            (0x1C, 0x01), (0x1A, 0x05, 0x00, 0x65),
                            (0x15, 0x02), (0x14, 0x0C), (0x16, 0x47), (0x15, 0x01),
-                           (0x16, 0x44), (0x14, 0x0E), (0x15, 0x15)]
+                           (0x16, 0x44), (0x14, 0x0E), (0x15, 0x15),
+                           (0x16, 0x22), (0x14, 0x12), (0x16, 0x40), (0x14, 0x06),
+                           (0x16, 0x41), (0x16, 0x48), (0x16, 0x02), (0x11,),
+                           (0x1A, 0x07)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
@@ -1258,7 +1273,13 @@ class CivReader(QtCore.QThread):
             self.af_gain.emit(bcd_be(data[1:]))
         elif cmd == 0x16 and len(data) == 2 and data[0] == 0x44:
             self.compressor.emit(data[1] == 0x01)
-        elif cmd == 0x14 and len(data) == 3 and data[0] in (0x02, 0x03, 0x0E):
+        elif cmd == 0x16 and len(data) == 2 and data[0] in (0x22, 0x40, 0x41, 0x48, 0x02):
+            self.switch.emit(0x1600 | data[0], data[1])
+        elif cmd == 0x11 and len(data) == 1:
+            self.switch.emit(SW_ATT, data[0])
+        elif cmd == 0x1A and len(data) == 2 and data[0] == 0x07:
+            self.switch.emit(SW_IPPLUS, data[1])
+        elif cmd == 0x14 and len(data) == 3 and data[0] in (0x02, 0x03, 0x0E, 0x06, 0x12):
             self.level.emit(data[0], bcd_be(data[1:]))
         elif cmd == 0x15 and len(data) == 3 and data[0] == 0x02:
             self.meter.emit(bcd_be(data[1:]))
@@ -1585,6 +1606,9 @@ class MainWindow(QtWidgets.QMainWindow):
             button = QtWidgets.QPushButton(f"FIL{number}")
             button.setCheckable(True)
             button.setMinimumWidth(44)
+            # filtre en cours en jaune, comme la bande en cours
+            button.setStyleSheet("QPushButton:checked { background: #ffd54a; "
+                                 "color: #101418; font-weight: bold; }")
             self.filter_buttons.addButton(button, number)
             filters.addWidget(button)
         self.filter_buttons.idClicked.connect(self.on_filter_selected)
@@ -1975,6 +1999,67 @@ class MainWindow(QtWidgets.QMainWindow):
                 lambda value, sub=sub: self.on_level_slider(sub, value))
             add_slider(sound, 0, 13 if sub == 0x02 else 17, name, slider, label)
             self.level_sliders[sub] = (slider, label)
+        # filtres de réception de la radio, sur la ligne des réglages du scope
+        green = ("QPushButton:checked { background: #2e7d32; color: white; "
+                 "font-weight: bold; }")
+        self.switch_buttons = {}
+
+        def filter_button(code, text, tip):
+            button = QtWidgets.QPushButton(text)
+            button.setCheckable(True)
+            button.setEnabled(False)            # activé quand la radio répond
+            button.setStyleSheet(green)
+            button.setToolTip(tip)
+            button.setMinimumWidth(48)
+            button.clicked.connect(lambda on, c=code: self.on_switch_button(c, on))
+            self.switch_buttons[code] = button
+            return button
+
+        def filter_slider(sub, tip):
+            slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+            slider.setRange(0, 255)
+            slider.setFixedWidth(90)
+            slider.setEnabled(False)
+            slider.setToolTip(tip)
+            label = QtWidgets.QLabel()
+            label.setMinimumWidth(36)
+            slider.valueChanged.connect(lambda value, s=sub: self.on_level_slider(s, value))
+            self.level_sliders[sub] = (slider, label)
+            return slider, label
+
+        widgets = [QtWidgets.QLabel("  "),
+                   filter_button(SW_NB, "NB", "Noise Blanker : contre les crépitements "
+                                 "(allumages, clôtures, alimentations). À couper près "
+                                 "d'une station forte."),
+                   *filter_slider(0x12, "Niveau du NB (50 % pour commencer)"),
+                   filter_button(SW_NR, "NR", "Réduction de bruit de la radio, contre "
+                                 "le souffle. Pas en modes numériques."),
+                   *filter_slider(0x06, "Niveau du NR, de 0 à 15 : 4 à 7 en BLU, "
+                                  "au-delà le son devient « sous l'eau »")]
+        self.notch_combo = QtWidgets.QComboBox()
+        for text, value in (("Notch —", 0), ("Notch auto", SW_AN), ("Notch manuel", SW_MN)):
+            self.notch_combo.addItem(text, value)
+        self.notch_combo.setEnabled(False)
+        self.notch_combo.setToolTip("Contre une porteuse ou un sifflement : auto en BLU, "
+                                    "manuel en CW et en numérique (l'auto effacerait le "
+                                    "signal). Position du manuel : sur la radio")
+        self.notch_combo.activated.connect(self.on_notch)
+        self.preamp_combo = QtWidgets.QComboBox()
+        for text, value in (("P.AMP —", 0), ("P.AMP 1", 1), ("P.AMP 2", 2)):
+            self.preamp_combo.addItem(text, value)
+        self.preamp_combo.setEnabled(False)
+        self.preamp_combo.setToolTip("Préampli : à couper sous 10 MHz, le bruit de bande "
+                                     "y est déjà plus fort que celui de la radio")
+        self.preamp_combo.activated.connect(
+            lambda i: self.on_switch_button(SW_PREAMP, self.preamp_combo.itemData(i)))
+        widgets += [self.notch_combo, self.preamp_combo,
+                    filter_button(SW_ATT, "ATT", "Atténuateur de 20 dB : bande saturée "
+                                  "par des signaux très forts"),
+                    filter_button(SW_IPPLUS, "IP+", "IP+ : meilleure tenue aux signaux "
+                                  "forts (80 m, 40 m le soir)")]
+        self.notch_state = {SW_AN: 0, SW_MN: 0}
+        for widget in widgets:
+            controls.insertWidget(controls.count() - 1, widget)    # avant l'espace
 
         self.loopback = find_loopback_stream()
         if self.loopback:
@@ -2411,6 +2496,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.af_gain.connect(self.on_af_gain)
             self.civ.level.connect(self.on_level)
             self.civ.compressor.connect(self.on_compressor)
+            self.civ.switch.connect(self.on_switch)
             self.civ.tuner.connect(self.on_tuner)
             self.civ.power.connect(self.on_power)
             self.civ.key_speed.connect(self.on_key_speed)
@@ -3966,6 +4052,38 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.civ:
             self.civ.set_level(sub, level)
 
+    def on_switch(self, code, value):
+        """État d'un filtre lu sur la radio."""
+        if code in (SW_AN, SW_MN):
+            self.notch_state[code] = value
+            self.notch_combo.setEnabled(True)
+            mode = SW_AN if self.notch_state[SW_AN] else SW_MN if self.notch_state[SW_MN] else 0
+            self.notch_combo.setCurrentIndex(self.notch_combo.findData(mode))
+        elif code == SW_PREAMP:
+            self.preamp_combo.setEnabled(True)
+            index = self.preamp_combo.findData(value)
+            if index >= 0:
+                self.preamp_combo.setCurrentIndex(index)
+        elif code in self.switch_buttons:
+            button = self.switch_buttons[code]
+            button.setEnabled(True)
+            button.setChecked(value != 0)
+
+    def on_switch_button(self, code, value):
+        if self.civ:
+            # l'atténuateur se règle en dB (20), les autres en 0 / 1 / 2
+            self.civ.set_switch(code, (0x20 if value else 0) if code == SW_ATT else int(value))
+
+    def on_notch(self, index):
+        """Notch auto ou manuel : l'un coupe l'autre."""
+        mode = self.notch_combo.itemData(index)
+        if self.civ:
+            for code in (SW_AN, SW_MN):
+                if code != mode:
+                    self.civ.set_switch(code, 0)
+            if mode:
+                self.civ.set_switch(mode, 1)
+
     def on_compressor(self, on):
         self.comp_button.setEnabled(True)
         self.comp_button.setChecked(on)
@@ -4675,9 +4793,12 @@ class CallsignClick(QtCore.QObject):
 
 
 def level_text(sub, level):
-    """Réglage 0x14 affiché : le compresseur de 0 à 10 comme sur la radio, le reste en %."""
+    """Réglage 0x14 affiché : compresseur de 0 à 10 et NR de 0 à 15 comme sur la
+    radio, le reste en %."""
     if sub == 0x0E:
         return f"{round(level * 10 / 255)}"
+    if sub == 0x06:                         # NR : de 0 à 15 comme sur la radio
+        return f"{round(level * 15 / 255)}"
     return f"{round(level * 100 / 255)} %"
 
 

@@ -152,6 +152,21 @@ Le menu **Mode** propose : LSB, LSB-D, USB, USB-D, AM, CW, FM, CW-R.
 - Le **curseur de largeur** règle la largeur du filtre en cours, comme le menu FILTER › BW de la radio, qui la garde pour ce filtre et ce mode. Les pas sont de 50 Hz jusqu'à 500 Hz puis de 100 Hz en BLU, CW et RTTY, et de 200 Hz en AM. En FM la largeur est fixe : le curseur affiche « fixe ».
 - La bande passante s'affiche en jaune clair sur le spectre RF, à la largeur réelle lue sur la radio.
 
+### Filtres de réception (ligne du scope)
+
+Sur la ligne « RF (scope radio) / Largeur / Niveaux auto… », à droite. Ils pilotent les fonctions de la radio et suivent ce qui est réglé sur sa façade. Ils restent grisés tant que la radio n'a pas répondu.
+
+| Commande | Rôle | Conseil |
+|---|---|---|
+| **NB** (vert en service) et niveau | Noise Blanker : contre les bruits impulsionnels (allumages, clôtures, alimentations à découpage) | Niveau 50 % pour commencer. À couper près d'une station forte |
+| **NR** (vert) et niveau 0 à 15 | Réduction de bruit de la radio, contre le souffle | 4 à 7 en BLU ; au-delà, son « sous l'eau ». Bas ou coupé en CW, jamais en numérique |
+| **Notch** — / auto / manuel | Contre une porteuse ou un sifflement | Auto en BLU ; manuel en CW et en numérique (l'auto effacerait le signal). La position du manuel se règle sur la radio |
+| **P.AMP** — / 1 / 2 | Préampli | À couper sous 10 MHz : le bruit de bande y dépasse celui de la radio |
+| **ATT** (vert) | Atténuateur de 20 dB | Bande saturée par des signaux très forts |
+| **IP+** (vert) | Meilleure tenue aux signaux forts | Utile en 80 m et 40 m le soir |
+
+En FT8, FT4, RTTY et SSTV : filtre large, pas de NR, pas de notch auto, NB seulement en cas de vrais crépitements. Les décodeurs préfèrent le son brut.
+
 ### Horloge
 
 L'heure **UTC** (pour FT8 et le carnet) et l'heure **locale** s'affichent à droite de la ligne de fréquence. L'affichage change pile à chaque seconde.
