@@ -51,6 +51,8 @@
 | 47 | 25/10/2026 | `195acbc` | Émission FT8 et FT4 (`ft8_encoder.py` : `ft8code`/`ft4code` puis GFSK) au créneau pair ou impair, fréquence choisie au clic (ligne rouge), messages pré-enregistrés FT, QSO automatique (réponses toutes seules, CQ relancé après chaque QSO, arrêt si la station appelée en prend une autre), réponses surlignées et panneau Réponses, décodage anticipé avant la fin du créneau, mémoires FT4 de 80 m à 6 m |
 | 48 | 25/10/2026 | `50a9128` | Filtres de réception de la radio sur la ligne du scope : NB et NR avec leur niveau, notch auto ou manuel, préampli, ATT, IP+ (lus sur la radio, en vert en service) ; bouton FIL1-3 en cours en jaune |
 | 49 | 25/10/2026 | `8a6fde7` | En USB, LSB ou sans décodeur, lignes de messages masquées (Noter le QSO et Carnet… restent) ; Effacer et Grande fenêtre masqués sans décodeur ; choisir RTTY, FT8 ou FT4 met la radio en USB-D, choisir CW la met en CW ; plus de saut d'affichage quand la radio renvoie son mode |
+| 50 | 27/10/2026 | `b3ce359` | Essai de look radio, option `--look-radio` (`look_radio.py`) : boutons métal en relief, cases en interrupteurs à voyant, champs et listes en afficheurs verts, flèches lisibles, curseurs à bouton chromé, sans élargir la fenêtre |
+| 51 | 27/10/2026 | `8d4388b` | CW émise par le manipulateur de la radio en trames CI-V de 10 caractères (`radio_frames()`), chaque trame envoyée 1 s avant la fin de la précédente : le petit tampon de la radio ne perd plus de texte |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
