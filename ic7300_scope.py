@@ -26,7 +26,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from cw_decoder import CwDecoder
-from cw_pioche import char_schedule, hand_timing
+from cw_pioche import char_schedule, hand_timing, radio_frames
 import carnet
 from qrz import Qrz, QrzError, cw_name
 from rtty_decoder import RttyDecoder, afsk
@@ -259,6 +259,8 @@ CALLSIGN_RE = re.compile(r"(?:[A-Z0-9]{1,4}/)?[A-Z0-9]{1,3}[0-9][A-Z0-9]{0,3}[A-
 TX_TEXT_COLOR = "#ef5350"       # texte émis en CW, parmi le texte décodé
 REPLY_BG, REPLY_FG = "#ffd54a", "#101418"     # FT : ligne qui contient mon indicatif
 CW_DIRECT_IDLE = 3.0            # s sans frappe en direct : fin de la ligne émise
+CW_CHUNK = 10                   # caractères par trame CW (30 au plus pour la radio)
+CW_LEAD = 1.0                   # s d'avance de la trame CW suivante sur la manipulation
 CW_ECHO_DELAY = 0.15            # s entre l'envoi CI-V et la première lettre manipulée
 SLIDER_WIDTH = 150              # px : curseurs de la grille du son
 SOUND_GAPS = (4, 8, 12, 16, 20)  # colonnes vides entre les groupes de la grille
@@ -712,6 +714,9 @@ class CivReader(QtCore.QThread):
         self._pending_width = None
         self._pending_power = None
         self._pending_key_speed = None
+        self._cw_chunks = []            # (trame, durée) CW pas encore envoyées
+        self._cw_busy_until = 0.0       # fin de la manipulation déjà envoyée
+        self._cw_lock = threading.Lock()
         self._break_in = None           # BK-IN : 0 arrêt, 1 semi, 2 full
         self._pending_usb_mod = None
         self._pending_ptt = None
@@ -832,13 +837,22 @@ class CivReader(QtCore.QThread):
     def set_key_speed(self, level):
         self._pending_key_speed = level
 
-    def send_cw(self, text):
+    def send_cw(self, text, wpm):
         """Texte émis en CW par le manipulateur de la radio (mode CW).
 
         Sans BK-IN la radio ne passe pas en émission : on met le semi BK-IN."""
         self._break_in_for_cw()
-        for i in range(0, len(text), 30):       # 30 caractères par trame
-            self._commands.put((0x17, *text[i:i + 30].encode("ascii")))
+        # le tampon de la radio est petit et perd ce qui déborde : chaque
+        # trame part peu avant que la radio ait fini de manipuler la précédente
+        with self._cw_lock:
+            if len(text) <= CW_CHUNK:
+                # lettre ou mot tapé en direct : envoyé tel quel, espaces comprises
+                gap = 7 if text.endswith(" ") else 3
+                frames = [(text, char_schedule(text.strip(), wpm)[1] + gap * 1.2 / wpm)]
+            else:
+                frames = radio_frames(text, wpm, CW_CHUNK)
+            for frame, duration in frames:
+                self._cw_chunks.append((frame.encode("ascii"), duration))
 
     def send_cw_hand(self, text, wpm):
         """Texte émis comme à la pioche : rythme irrégulier d'une main, la
@@ -901,6 +915,9 @@ class CivReader(QtCore.QThread):
         self._hand_stop.set()
         while not self._hand_queue.empty():
             self._hand_queue.get_nowait()
+        with self._cw_lock:
+            self._cw_chunks.clear()
+            self._cw_busy_until = 0.0
         self._commands.put((0x17, 0xFF))
 
     def set_onoff(self, on):
@@ -1048,6 +1065,7 @@ class CivReader(QtCore.QThread):
                     # autre filtre : sa largeur
                     self._transact(ser, (0x1A, 0x03), (0x1A,))
                 changed = True
+            self._send_cw_chunk(ser)
             if not self._memory_jobs.empty():
                 # une écriture par tour : les mesures continuent
                 self._write_memory(ser, *self._memory_jobs.get())
@@ -1138,6 +1156,22 @@ class CivReader(QtCore.QThread):
         if self._scope_speed is not None:
             self._command(ser, 0x27, 0x1A, 0x00, self._scope_speed)
         remove_state("scope")
+
+    def _send_cw_chunk(self, ser):
+        with self._cw_lock:
+            if not self._cw_chunks:
+                return
+            chunk = self._cw_chunks[0]
+        now = time.monotonic()
+        if now < self._cw_busy_until - CW_LEAD:
+            return                      # la radio a encore de quoi manipuler
+        frame, duration = chunk
+        if self._transact(ser, (0x17, *frame), (0xFB, 0xFA)) == 0xFB:
+            with self._cw_lock:
+                # arrêté entre-temps : la liste a été vidée
+                if self._cw_chunks and self._cw_chunks[0] is chunk:
+                    self._cw_chunks.pop(0)
+                    self._cw_busy_until = max(now, self._cw_busy_until) + duration
 
     def _command(self, ser, *payload):
         reply = self._transact(ser, payload, (0xFB, 0xFA))
@@ -3184,7 +3218,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.cw_hand.isChecked():
             self.civ.send_cw_hand(text, self.cw_speed.value())
         else:
-            self.civ.send_cw(text)
+            self.civ.send_cw(text, self.cw_speed.value())
         if not direct:
             self.statusBar().showMessage(f"CW : {text}")
         # le message émis s'écrit en rouge au rythme de la manipulation ; un
