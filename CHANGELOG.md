@@ -53,6 +53,7 @@
 | 49 | 25/10/2026 | `8a6fde7` | En USB, LSB ou sans décodeur, lignes de messages masquées (Noter le QSO et Carnet… restent) ; Effacer et Grande fenêtre masqués sans décodeur ; choisir RTTY, FT8 ou FT4 met la radio en USB-D, choisir CW la met en CW ; plus de saut d'affichage quand la radio renvoie son mode |
 | 50 | 27/10/2026 | `b3ce359` | Essai de look radio, option `--look-radio` (`look_radio.py`) : boutons métal en relief, cases en interrupteurs à voyant, champs et listes en afficheurs verts, flèches lisibles, curseurs à bouton chromé, sans élargir la fenêtre |
 | 51 | 27/10/2026 | `8d4388b` | CW émise par le manipulateur de la radio en trames CI-V de 10 caractères (`radio_frames()`), chaque trame envoyée 1 s avant la fin de la précédente : le petit tampon de la radio ne perd plus de texte |
+| 52 | 27/10/2026 | `57fbba0` | Look radio adopté : toujours appliqué, option `--look-radio` retirée |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
