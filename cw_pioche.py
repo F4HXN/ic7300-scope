@@ -52,6 +52,36 @@ def char_schedule(text, wpm):
     return out, t
 
 
+def radio_frames(text, wpm, size):
+    """Texte découpé en trames CI-V d'au plus `size` caractères, sans couper
+    un signe ^XX, de préférence entre deux mots : [(trame, durée au
+    manipulateur en s, espace qui suit comprise)]."""
+    unit = 1.2 / wpm
+    pieces = []                         # (morceau, finit un mot)
+    for word in text.split():
+        signs = [label for label, _ in _chunks(word)]
+        part = ""
+        for label in signs:
+            if part and len(part) + len(label) > size - 1:
+                pieces.append((part, False))
+                part = ""
+            part += label
+        if part:
+            pieces.append((part, True))
+    frames, frame, units = [], "", 0
+    for k, (piece, word_end) in enumerate(pieces):
+        last = k == len(pieces) - 1
+        add = piece + (" " if word_end and not last else "")
+        if frame and len(frame) + len(add) > size:
+            frames.append((frame, units * unit))
+            frame, units = "", 0
+        frame += add
+        units += char_schedule(piece, wpm)[1] / unit + (7 if word_end else 3)
+    if frame:
+        frames.append((frame, units * unit))
+    return frames
+
+
 def hand_timing(text, wpm, rng=random):
     unit = 1.2 / wpm                        # durée d'un point (norme PARIS)
     # style de l'opérateur, le même pour tout le message
