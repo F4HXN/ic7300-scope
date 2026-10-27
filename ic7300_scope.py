@@ -4905,6 +4905,8 @@ def main():
     parser.add_argument("--no-cat", action="store_true",
                         help="ne pas ouvrir le port CI-V (s'il est pris par "
                              "un autre logiciel)")
+    parser.add_argument("--look-radio", action="store_true",
+                        help="essai : boutons métal, interrupteurs à voyant, afficheurs verts")
     parser.add_argument("--remote", metavar="HÔTE",
                         help="radio branchée sur un autre PC du réseau, qui fait "
                              "tourner cat_server.py et partage son son")
@@ -4938,6 +4940,9 @@ def main():
         QSlider::sub-page:horizontal:disabled { background: #546e7a; }
         QSlider::handle:horizontal:disabled { background: #78909c; }
     """)
+    if args.look_radio:
+        import look_radio
+        app.setStyleSheet(look_radio.style())
     window = MainWindow(args)
     window.show()
     # kill, Ctrl+C ou fin de session : fermer la fenêtre pour remettre la
