@@ -1,8 +1,8 @@
-"""Look « radio » (essai) : boutons métal en relief, cases en interrupteurs à
+"""Look « radio » : boutons métal en relief, cases en interrupteurs à
 levier avec voyant, champs et listes en afficheurs verts façon écran LCD,
 curseurs à piste ambre et bouton chromé.
 
-S'applique à toute l'appli (ic7300_scope.py --look-radio). Les flèches et les
+S'applique à toute l'appli. Les flèches et les
 interrupteurs sont dessinés au démarrage en petites images dans
 ~/.cache/ic7300-scope : la feuille de style Qt ne sait pas les dessiner seule.
 """

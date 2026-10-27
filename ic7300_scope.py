@@ -28,6 +28,7 @@ import pyqtgraph as pg
 from cw_decoder import CwDecoder
 from cw_pioche import char_schedule, hand_timing, radio_frames
 import carnet
+import look_radio
 from qrz import Qrz, QrzError, cw_name
 from rtty_decoder import RttyDecoder, afsk
 from ft8_decoder import Ft4Decoder, Ft8Decoder
@@ -4939,8 +4940,6 @@ def main():
     parser.add_argument("--no-cat", action="store_true",
                         help="ne pas ouvrir le port CI-V (s'il est pris par "
                              "un autre logiciel)")
-    parser.add_argument("--look-radio", action="store_true",
-                        help="essai : boutons métal, interrupteurs à voyant, afficheurs verts")
     parser.add_argument("--remote", metavar="HÔTE",
                         help="radio branchée sur un autre PC du réseau, qui fait "
                              "tourner cat_server.py et partage son son")
@@ -4962,21 +4961,8 @@ def main():
     app.setWindowIcon(QtGui.QIcon(ICON))
     app.setStyle("Fusion")
     app.setPalette(dark_palette())
-    # curseurs plus gros : rainure épaisse et poignée large, faciles à attraper
-    app.setStyleSheet("""
-        QSlider:horizontal { min-height: 28px; }
-        QSlider::groove:horizontal { height: 8px; border-radius: 4px;
-                                     background: #37474f; }
-        QSlider::sub-page:horizontal { border-radius: 4px; background: #4fc3f7; }
-        QSlider::handle:horizontal { width: 22px; margin: -8px 0;
-                                     border-radius: 11px; background: #eceff1; }
-        QSlider::handle:horizontal:hover { background: #ffffff; }
-        QSlider::sub-page:horizontal:disabled { background: #546e7a; }
-        QSlider::handle:horizontal:disabled { background: #78909c; }
-    """)
-    if args.look_radio:
-        import look_radio
-        app.setStyleSheet(look_radio.style())
+    # look radio : boutons métal, interrupteurs à voyant, afficheurs verts, curseurs chromés
+    app.setStyleSheet(look_radio.style())
     window = MainWindow(args)
     window.show()
     # kill, Ctrl+C ou fin de session : fermer la fenêtre pour remettre la
