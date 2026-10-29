@@ -64,6 +64,8 @@ RECORD_DIR = os.path.join(music_dir(), "IC-7300")
 # appel CQ en phonie (voix de synthèse, bouton APPEL CQ) : fichier dans le dossier
 # des enregistrements, à refaire avec sa propre voix ou son indicatif si besoin
 VOICE_CQ_FILE = os.path.join(RECORD_DIR, "appel-cq.wav")
+VOICE_CQ_BACKUP = os.path.join(RECORD_DIR, "appel-cq-avant.wav")    # l'appel d'avant le dernier enregistrement
+VOICE_CQ_MAX_S = 60                 # enregistrement de l'appel coupé au bout de ce temps
 PHONE_MODES = ("USB", "LSB", "AM", "FM")
 
 # réglages de la radio avant que l'appli les change (scope, mode data pendant
@@ -2300,10 +2302,24 @@ class MainWindow(QtWidgets.QMainWindow):
             f"(USB, LSB, AM, FM), puis repasse en réception. Fichier : {VOICE_CQ_FILE}. "
             "Un second clic arrête l'émission.")
         self.cq_voice_button.clicked.connect(self.send_voice_cq)
+        # perroquet : l'appel enregistré au micro (entrée TX), rejoué aussitôt pour l'écouter
+        self.cq_record_button = QtWidgets.QPushButton("● ENREG. APPEL")
+        self.cq_record_button.setCheckable(True)
+        self.cq_record_button.setMinimumWidth(120)
+        self.cq_record_button.setToolTip(
+            "Perroquet : enregistre l'appel au micro choisi en Entrée (ligne TX), jusqu'au second "
+            f"clic ({VOICE_CQ_MAX_S} s au plus), puis le rejoue sur la Sortie du PC. Il remplace "
+            "l'appel émis par APPEL CQ ; l'appel d'avant est gardé (appel-cq-avant.wav).")
+        self.cq_record_button.toggled.connect(self.on_cq_record)
+        self.cq_recorder = None
+        self.cq_record_timer = QtCore.QTimer(self)
+        self.cq_record_timer.setSingleShot(True)
+        self.cq_record_timer.timeout.connect(lambda: self.cq_record_button.setChecked(False))
         # sous Enreg./Dossier, dans la colonne des bandes
         bands.addWidget(self.ptt_button, memory_row + 4, 0, 1, 2)
         bands.addWidget(self.cq_voice_button, memory_row + 5, 0, 1, 2)
-        bands.setRowStretch(memory_row + 6, 1)
+        bands.addWidget(self.cq_record_button, memory_row + 6, 0, 1, 2)
+        bands.setRowStretch(memory_row + 7, 1)
         self._set_ptt_button(False)
 
         # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
@@ -3703,6 +3719,57 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ptt_button.setChecked(True)
         if self.tx_active:
             self.statusBar().showMessage("Appel CQ en cours (second clic : arrêt)")
+
+    def on_cq_record(self, on):
+        """Perroquet : enregistre l'appel au micro, puis le rejoue sur la sortie du PC."""
+        button = self.cq_record_button
+        tmp = VOICE_CQ_FILE + ".enreg.wav"
+        if on:
+            if self.tx_active:
+                self.statusBar().showMessage("Enregistrement de l'appel : pas pendant une émission")
+                button.blockSignals(True)
+                button.setChecked(False)
+                button.blockSignals(False)
+                return
+            source = self.tx_source.currentData()
+            os.makedirs(RECORD_DIR, exist_ok=True)
+            self.cq_recorder = subprocess.Popen(
+                ["parecord", "--file-format=wav", "--channels=1", "--rate=48000", "--format=s16le",
+                 "--latency-msec=100"]                   # blocs courts : rien de perdu à l'arrêt
+                + ([f"--device={source}"] if source and source != "file" else []) + [tmp])
+            button.setText("■ FIN ENREG.")
+            button.setStyleSheet("background: #c62828; color: white; font-weight: bold;")
+            self.cq_record_timer.start(VOICE_CQ_MAX_S * 1000)
+            self.statusBar().showMessage("Parle : appel en cours d'enregistrement (second clic : fin)")
+            return
+        self.cq_record_timer.stop()
+        button.setText("● ENREG. APPEL")
+        button.setStyleSheet("")
+        recorder, self.cq_recorder = self.cq_recorder, None
+        if not recorder:
+            return
+        recorder.send_signal(signal.SIGINT)              # parecord ferme le fichier proprement
+        try:
+            recorder.wait(3)
+        except subprocess.TimeoutExpired:
+            recorder.kill()
+        try:
+            with wave.open(tmp) as w:
+                seconds = w.getnframes() / w.getframerate()
+        except (OSError, wave.Error, EOFError):
+            seconds = 0
+        if seconds < 1:
+            self.statusBar().showMessage("Appel trop court ou micro muet : l'appel d'avant est gardé")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return
+        if os.path.exists(VOICE_CQ_FILE):
+            os.replace(VOICE_CQ_FILE, VOICE_CQ_BACKUP)
+        os.replace(tmp, VOICE_CQ_FILE)
+        self.statusBar().showMessage(f"Appel enregistré ({seconds:.1f} s), rejoué sur la sortie du PC ; "
+                                     "APPEL CQ l'émettra")
+        sink = self.pc_output.currentData()
+        subprocess.Popen(["paplay"] + ([f"--device={sink}"] if sink else []) + [VOICE_CQ_FILE])
 
     def choose_tx_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
