@@ -359,7 +359,7 @@ La sortie USB de la radio ignore le squelch : le logiciel coupe lui-même l'éco
 - Le son vient du fichier `appel-cq.wav` du dossier des enregistrements (`~/Musique/IC-7300`), une voix de synthèse au départ (Piper, voix française « pierre »).
 - **● ENREG. APPEL** (perroquet), sous APPEL CQ : enregistre l'appel avec sa propre voix, au micro choisi en **Entrée** (ligne TX), jusqu'au second clic (■ FIN ENREG., 60 s au plus). L'appel est aussitôt rejoué sur la **Sortie** du PC pour l'écouter, et APPEL CQ l'émettra ensuite. L'appel d'avant est gardé dans `appel-cq-avant.wav` ; un enregistrement de moins d'une seconde est ignoré.
 - Le Niveau PC et le Réglage ALC jouent comme pour un micro ou un fichier.
-- **Retour** : pendant l'appel, le message est aussi joué sur la **Sortie** du PC (ligne RX), pour l'entendre partir. L'écoute de la radio, elle, reste coupée pendant l'émission.
+- **MONITEUR** (à droite d'APPEL CQ, vert en service) : pendant l'appel, le message est aussi joué sur la **Sortie** du PC (ligne RX), pour l'entendre partir ; un clic le coupe ou le remet, même en cours d'appel. Le choix est gardé d'un lancement à l'autre. L'écoute de la radio, elle, reste coupée pendant l'émission.
 
 ---
 
