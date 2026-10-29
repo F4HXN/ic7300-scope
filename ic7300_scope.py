@@ -61,6 +61,10 @@ def music_dir():
 
 
 RECORD_DIR = os.path.join(music_dir(), "IC-7300")
+# appel CQ en phonie (voix de synthèse, bouton APPEL CQ) : fichier dans le dossier
+# des enregistrements, à refaire avec sa propre voix ou son indicatif si besoin
+VOICE_CQ_FILE = os.path.join(RECORD_DIR, "appel-cq.wav")
+PHONE_MODES = ("USB", "LSB", "AM", "FM")
 
 # réglages de la radio avant que l'appli les change (scope, mode data pendant
 # l'émission) ; le fichier n'existe que tant qu'il reste quelque chose à
@@ -2288,9 +2292,18 @@ class MainWindow(QtWidgets.QMainWindow):
         sound.addWidget(slider, 1, 18)
         sound.addWidget(label, 1, 19)
         sound.addWidget(self.tx_meter_label, 1, 21)
+        # appel CQ en phonie : le fichier de voix émis une fois, PTT compris
+        self.cq_voice_button = QtWidgets.QPushButton("APPEL CQ")
+        self.cq_voice_button.setMinimumWidth(120)
+        self.cq_voice_button.setToolTip(
+            "Émet l'appel enregistré (« CQ CQ CQ, F4HXN… lance appel, over ») en phonie "
+            f"(USB, LSB, AM, FM), puis repasse en réception. Fichier : {VOICE_CQ_FILE}. "
+            "Un second clic arrête l'émission.")
+        self.cq_voice_button.clicked.connect(self.send_voice_cq)
         # sous Enreg./Dossier, dans la colonne des bandes
         bands.addWidget(self.ptt_button, memory_row + 4, 0, 1, 2)
-        bands.setRowStretch(memory_row + 5, 1)
+        bands.addWidget(self.cq_voice_button, memory_row + 5, 0, 1, 2)
+        bands.setRowStretch(memory_row + 6, 1)
         self._set_ptt_button(False)
 
         # Émission CW : texte envoyé au manipulateur de la radio (CI-V)
@@ -3670,6 +3683,25 @@ class MainWindow(QtWidgets.QMainWindow):
             db += 60 * math.log10(percent / 100) if percent else -200
         self.tx_in_meter.setValue(db)
         self.tx_in_value.setText(f"{max(db, -99):5.1f}")    # silence : pas de -200
+
+    def send_voice_cq(self):
+        """APPEL CQ : le fichier de voix émis une fois (comme un message RTTY)."""
+        if self.tx_active:
+            self.stop_tx("Émission arrêtée")
+            return
+        mode = base_mode(self.mode_combo.currentText())
+        if mode not in PHONE_MODES:
+            self.statusBar().showMessage(f"APPEL CQ : en phonie seulement (USB, LSB, AM, FM), "
+                                         f"pas en {self.mode_combo.currentText()}")
+            return
+        if not os.path.exists(VOICE_CQ_FILE):
+            self.statusBar().showMessage(f"APPEL CQ : fichier {VOICE_CQ_FILE} introuvable")
+            return
+        self.tx_once = VOICE_CQ_FILE
+        self.tx_digital = False
+        self.ptt_button.setChecked(True)
+        if self.tx_active:
+            self.statusBar().showMessage("Appel CQ en cours (second clic : arrêt)")
 
     def choose_tx_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
