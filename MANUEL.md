@@ -353,6 +353,12 @@ La sortie USB de la radio ignore le squelch : le logiciel coupe lui-même l'éco
 - Avec un **fichier**, le fichier part 400 ms après le passage en émission. L'émission s'arrête toute seule à la fin du fichier.
 - Hors mode data, le logiciel met le temps de l'émission l'entrée de la radio sur USB (menu DATA OFF MOD), puis remet le réglage d'avant.
 
+### Bouton APPEL CQ
+
+- Sous ÉMETTRE : en phonie (**USB, LSB, AM, FM**), il émet une fois l'appel enregistré, « CQ, CQ, CQ. F4HXN, F4HXN, F4HXN, lance appel. Over. », puis la radio repasse en réception. Le bouton ÉMETTRE devient ■ ARRÊTER pendant ce temps ; un second clic sur APPEL CQ (ou sur ARRÊTER) coupe l'émission.
+- Le son vient du fichier `appel-cq.wav` du dossier des enregistrements (`~/Musique/IC-7300`). C'est une voix de synthèse (Piper, voix française) ; on peut le remplacer par sa propre voix enregistrée, au même nom, en WAV.
+- Le Niveau PC et le Réglage ALC jouent comme pour un micro ou un fichier.
+
 ---
 
 ## 10. Décodeurs
