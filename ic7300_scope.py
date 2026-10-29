@@ -2509,6 +2509,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.sql_closed = False             # écoute coupée, squelch de la radio fermé
         self.radio_tx = False               # la radio émet (lu en CI-V)
         self.tx_player = None               # paplay du fichier
+        self.tx_monitor = None              # retour de l'APPEL CQ sur la sortie du PC
         self.tx_once = None                 # fichier émis une fois (RTTY), sans
                                             # changer l'entrée choisie
         self.tx_timer = QtCore.QTimer(self)
@@ -3955,11 +3956,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tx_active:
             self.tx_player = subprocess.Popen(
                 ["paplay", f"--device={self.radio_sink}", self.tx_playing])
+            # APPEL CQ : retour sur la sortie du PC (l'écoute radio, elle, reste coupée
+            # pendant l'émission ; pas de micro ouvert, donc pas de larsen)
+            if self.tx_playing == VOICE_CQ_FILE:
+                sink = self.pc_output.currentData()
+                self.tx_monitor = subprocess.Popen(
+                    ["paplay"] + ([f"--device={sink}"] if sink else []) + [self.tx_playing])
 
     def stop_tx(self, reason=None):
         if self.tx_player:
             self.tx_player.terminate()
             self.tx_player = None
+        if self.tx_monitor:
+            self.tx_monitor.terminate()
+            self.tx_monitor = None
         if self.tx_loopback:
             subprocess.run(["pactl", "unload-module", self.tx_loopback],
                            capture_output=True)
