@@ -55,6 +55,7 @@
 | 51 | 27/10/2026 | `8d4388b` | CW émise par le manipulateur de la radio en trames CI-V de 10 caractères (`radio_frames()`), chaque trame envoyée 1 s avant la fin de la précédente : le petit tampon de la radio ne perd plus de texte |
 | 52 | 27/10/2026 | `57fbba0` | Look radio adopté : toujours appliqué, option `--look-radio` retirée |
 | 53 | 29/10/2026 | `081cdde` | Bouton APPEL CQ sous ÉMETTRE : en phonie, l'appel enregistré (`appel-cq.wav`, voix de synthèse) émis une fois, puis retour en réception |
+| 54 | 29/10/2026 | `9a76a3e` | APPEL CQ : retour du message sur la sortie du PC pendant l'émission, perroquet ● ENREG. APPEL (l'appel enregistré au micro, rejoué aussitôt) |
 
 **Ajouté puis retiré :**
 - le **PSK31** (n° 1 et 10), retiré au n° 19 ;
