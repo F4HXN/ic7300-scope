@@ -91,6 +91,8 @@ MACROS_FILES = {kind: os.path.join(os.path.dirname(STATE_FILE), f"messages-{kind
 MEMORY_DUMP_FILE = os.path.join(os.path.dirname(STATE_FILE), "memoires-radio-brut.txt")
 # presets du PC : mode, filtre, largeur, puissance, USB MOD Level, décodeur
 PRESETS_FILE = os.path.join(os.path.dirname(STATE_FILE), "presets.json")
+# petits choix de l'interface gardés d'un lancement à l'autre (moniteur de l'APPEL CQ…)
+OPTIONS_FILE = os.path.join(os.path.dirname(STATE_FILE), "options.json")
 # presets de départ : seuls le mode, le filtre et le décodeur changent
 DEFAULT_PRESETS = [
     {"name": "FT8", "mode": "USB-D", "filter": 1, "decoder": "ft8"},
@@ -227,6 +229,25 @@ def update_state(**values):
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     with open(STATE_FILE, "w") as f:
         json.dump(state, f)
+
+
+def load_options():
+    try:
+        with open(OPTIONS_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_options(**values):
+    options = load_options()
+    options.update(values)
+    try:
+        os.makedirs(os.path.dirname(OPTIONS_FILE), exist_ok=True)
+        with open(OPTIONS_FILE, "w") as f:
+            json.dump(options, f)
+    except OSError:
+        pass
 
 
 def remove_state(*keys):
@@ -2296,12 +2317,20 @@ class MainWindow(QtWidgets.QMainWindow):
         sound.addWidget(self.tx_meter_label, 1, 21)
         # appel CQ en phonie : le fichier de voix émis une fois, PTT compris
         self.cq_voice_button = QtWidgets.QPushButton("APPEL CQ")
-        self.cq_voice_button.setMinimumWidth(120)
         self.cq_voice_button.setToolTip(
             "Émet l'appel enregistré (« Appel CQ, CQ, F4HXN, F4HXN, appel CQ ») en phonie "
             f"(USB, LSB, AM, FM), puis repasse en réception. Fichier : {VOICE_CQ_FILE}. "
             "Un second clic arrête l'émission.")
         self.cq_voice_button.clicked.connect(self.send_voice_cq)
+        # moniteur : l'appel aussi joué sur la sortie du PC pendant qu'il est émis
+        self.cq_monitor_button = QtWidgets.QPushButton("MONITEUR")
+        self.cq_monitor_button.setCheckable(True)
+        self.cq_monitor_button.setToolTip("En service (vert) : pendant l'APPEL CQ, le message est aussi "
+                                          "joué sur la Sortie du PC (ligne RX)")
+        self.cq_monitor_button.setStyleSheet("QPushButton:checked { background: #2e7d32; "
+                                             "color: white; font-weight: bold; }")
+        self.cq_monitor_button.setChecked(load_options().get("cq_monitor", True))
+        self.cq_monitor_button.toggled.connect(self.on_cq_monitor)
         # perroquet : l'appel enregistré au micro (entrée TX), rejoué aussitôt pour l'écouter
         self.cq_record_button = QtWidgets.QPushButton("● ENREG. APPEL")
         self.cq_record_button.setCheckable(True)
@@ -2317,7 +2346,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cq_record_timer.timeout.connect(lambda: self.cq_record_button.setChecked(False))
         # sous Enreg./Dossier, dans la colonne des bandes
         bands.addWidget(self.ptt_button, memory_row + 4, 0, 1, 2)
-        bands.addWidget(self.cq_voice_button, memory_row + 5, 0, 1, 2)
+        bands.addWidget(self.cq_voice_button, memory_row + 5, 0)
+        bands.addWidget(self.cq_monitor_button, memory_row + 5, 1)
         bands.addWidget(self.cq_record_button, memory_row + 6, 0, 1, 2)
         bands.setRowStretch(memory_row + 7, 1)
         self._set_ptt_button(False)
@@ -3720,6 +3750,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.tx_active:
             self.statusBar().showMessage("Appel CQ en cours (second clic : arrêt)")
 
+    def on_cq_monitor(self, on):
+        save_options(cq_monitor=on)
+        if not on and self.tx_monitor:                  # coupé en cours d'appel : tout de suite
+            self.tx_monitor.terminate()
+            self.tx_monitor = None
+
     def on_cq_record(self, on):
         """Perroquet : enregistre l'appel au micro, puis le rejoue sur la sortie du PC."""
         button = self.cq_record_button
@@ -4025,7 +4061,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 ["paplay", f"--device={self.radio_sink}", self.tx_playing])
             # APPEL CQ : retour sur la sortie du PC (l'écoute radio, elle, reste coupée
             # pendant l'émission ; pas de micro ouvert, donc pas de larsen)
-            if self.tx_playing == VOICE_CQ_FILE:
+            if self.tx_playing == VOICE_CQ_FILE and self.cq_monitor_button.isChecked():
                 sink = self.pc_output.currentData()
                 self.tx_monitor = subprocess.Popen(
                     ["paplay"] + ([f"--device={sink}"] if sink else []) + [self.tx_playing])
