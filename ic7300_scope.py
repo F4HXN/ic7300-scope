@@ -2296,7 +2296,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cq_voice_button = QtWidgets.QPushButton("APPEL CQ")
         self.cq_voice_button.setMinimumWidth(120)
         self.cq_voice_button.setToolTip(
-            "Émet l'appel enregistré (« CQ CQ CQ, F4HXN… lance appel, over ») en phonie "
+            "Émet l'appel enregistré (« Appel CQ, CQ, F4HXN, F4HXN, appel CQ ») en phonie "
             f"(USB, LSB, AM, FM), puis repasse en réception. Fichier : {VOICE_CQ_FILE}. "
             "Un second clic arrête l'émission.")
         self.cq_voice_button.clicked.connect(self.send_voice_cq)
