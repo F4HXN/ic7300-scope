@@ -1,0 +1,14 @@
+[Unit]
+Description=Relais du son de l'IC-7300 pour l'appli Android Lite
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=f4hxn
+ExecStart=/usr/bin/python3 /home/f4hxn/ic7300-son/son_reseau.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
