@@ -1695,7 +1695,6 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addWidget(self.step_combo)
         top.addSpacing(20)
         top.addWidget(self.mode_combo)
-        top.addLayout(filters)
         top.addSpacing(20)
         goto_label = QtWidgets.QLabel("Aller à")
         goto_label.setStyleSheet("font-size: 14pt;")
@@ -1724,6 +1723,8 @@ class MainWindow(QtWidgets.QMainWindow):
         top.addStretch()
         left = QtWidgets.QVBoxLayout()
         left.addLayout(top)
+        filters.addStretch()
+        left.addLayout(filters)
 
         # Bargraphs
         bars = QtWidgets.QGridLayout()
@@ -2061,7 +2062,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 lambda value, sub=sub: self.on_level_slider(sub, value))
             add_slider(sound, 0, 13 if sub == 0x02 else 17, name, slider, label)
             self.level_sliders[sub] = (slider, label)
-        # filtres de réception de la radio, sur la ligne des réglages du scope
+        # Réglages de réception près des filtres FIL.
         green = ("QPushButton:checked { background: #2e7d32; color: white; "
                  "font-weight: bold; }")
         self.switch_buttons = {}
@@ -2098,6 +2099,8 @@ class MainWindow(QtWidgets.QMainWindow):
                                  "le souffle. Pas en modes numériques."),
                    *filter_slider(0x06, "Niveau du NR, de 0 à 15 : 4 à 7 en BLU, "
                                   "au-delà le son devient « sous l'eau »")]
+        for widget in widgets:
+            filters.insertWidget(filters.count() - 1, widget)
         self.notch_combo = QtWidgets.QComboBox()
         for text, value in (("Notch —", 0), ("Notch auto", SW_AN), ("Notch manuel", SW_MN)):
             self.notch_combo.addItem(text, value)
@@ -2114,14 +2117,16 @@ class MainWindow(QtWidgets.QMainWindow):
                                      "y est déjà plus fort que celui de la radio")
         self.preamp_combo.activated.connect(
             lambda i: self.on_switch_button(SW_PREAMP, self.preamp_combo.itemData(i)))
-        widgets += [self.notch_combo, self.preamp_combo,
-                    filter_button(SW_ATT, "ATT", "Atténuateur de 20 dB : bande saturée "
+        for widget in (self.notch_combo, self.preamp_combo):
+            filters.insertWidget(filters.count() - 1, widget)
+        widgets = [filter_button(SW_ATT, "ATT", "Atténuateur de 20 dB : bande saturée "
                                   "par des signaux très forts"),
                     filter_button(SW_IPPLUS, "IP+", "IP+ : meilleure tenue aux signaux "
                                   "forts (80 m, 40 m le soir)")]
         self.notch_state = {SW_AN: 0, SW_MN: 0}
         for widget in widgets:
-            controls.insertWidget(controls.count() - 1, widget)    # avant l'espace
+            filters.insertSpacing(filters.count() - 1, 12)
+            filters.insertWidget(filters.count() - 1, widget)    # après P.AMP
 
         self.loopback = find_loopback_stream()
         if self.loopback:
@@ -2145,7 +2150,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pc_output.currentIndexChanged.connect(self.on_pc_output)
         self.af_slider.setEnabled(False)    # activé quand la radio répond
         self.af_slider.valueChanged.connect(self.on_af_slider)
-        layout.addLayout(controls)
+        # Juste sous les bargraphs, avant l'espace libre du panneau de gauche.
+        controls.insertStretch(0)
+        for index in range(controls.count()):
+            widget = controls.itemAt(index).widget()
+            if widget is not None:
+                controls.setAlignment(widget, QtCore.Qt.AlignVCenter)
+        left.insertLayout(left.count() - 1, controls)
         layout.addLayout(sound)
         layout.addSpacing(32)           # espace avant le décodeur
 
