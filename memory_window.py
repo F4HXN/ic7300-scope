@@ -9,9 +9,9 @@ import json
 import os
 
 from PyQt5 import QtCore, QtWidgets
+from platform_support import config_root
 
-MEMORY_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
-                           or os.path.expanduser("~/.config"),
+MEMORY_FILE = os.path.join(config_root(),
                            "ic7300-scope", "memoires.json")
 
 # mémoires de départ : nom, fréquence (Hz), mode, note

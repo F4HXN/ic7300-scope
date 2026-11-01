@@ -10,7 +10,7 @@ FT8 : 8 tonalités espacées de 6,25 Hz, 0,16 s par symbole (12,64 s en tout).
 FT4 : 4 tonalités espacées de 20,833 Hz, 0,048 s par symbole (5,04 s).
 """
 import re
-import shutil
+from platform_support import wsjtx_program, subprocess_options
 import subprocess
 
 import numpy as np
@@ -28,14 +28,15 @@ def encode(message, mode="ft8"):
     """Tonalités du message (liste d'entiers) ; Ft8EncodeError si le message
     ne passe pas tel quel (texte libre de plus de 13 caractères…)."""
     program = MODES[mode][0]
-    if not shutil.which(program):
+    executable = wsjtx_program(program)
+    if not executable:
         raise Ft8EncodeError(f"{program} introuvable (installer WSJT-X)")
     message = " ".join(message.upper().split())
     if not message:
         raise Ft8EncodeError("message vide")
     try:
-        out = subprocess.run([program, message], capture_output=True, text=True,
-                             timeout=5).stdout
+        out = subprocess.run([executable, message], capture_output=True, text=True,
+                             timeout=5, **subprocess_options()).stdout
     except (OSError, subprocess.SubprocessError) as e:
         raise Ft8EncodeError(f"{program} : {e}") from e
     # ligne « 1. message  décodé  ... » : ce que la station d'en face lira

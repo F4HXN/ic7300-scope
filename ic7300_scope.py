@@ -25,6 +25,10 @@ import serial
 from PyQt5 import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
+from platform_support import WINDOWS, config_root, cache_root, user_folder, open_folder
+if WINDOWS:
+    import windows_audio as win_audio
+
 from cw_decoder import CwDecoder
 from cw_pioche import char_schedule, hand_timing, radio_frames
 import carnet
@@ -52,12 +56,7 @@ REMOTE_TX = "ic7300_distant_tx"
 
 
 def music_dir():
-    try:
-        out = subprocess.run(["xdg-user-dir", "MUSIC"], capture_output=True,
-                             text=True, timeout=2).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        out = ""
-    return out or os.path.expanduser("~/Music")
+    return user_folder("MUSIC")
 
 
 RECORD_DIR = os.path.join(music_dir(), "IC-7300")
@@ -71,8 +70,7 @@ PHONE_MODES = ("USB", "LSB", "AM", "FM")
 # réglages de la radio avant que l'appli les change (scope, mode data pendant
 # l'émission) ; le fichier n'existe que tant qu'il reste quelque chose à
 # remettre, y compris si l'appli a planté
-STATE_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME")
-                          or os.path.expanduser("~/.config"),
+STATE_FILE = os.path.join(config_root(),
                           "ic7300-scope", "etat-origine.json")
 # dernière fréquence et dernier mode utilisés sur chaque bande
 BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
@@ -80,8 +78,7 @@ BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
 CALLSIGN_FILE = os.path.join(os.path.dirname(STATE_FILE), "indicatif.json")
 LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "carnet.adi")
 # message RTTY mis en audio avant d'être émis
-RTTY_TX_FILE = os.path.join(os.environ.get("XDG_CACHE_HOME")
-                            or os.path.expanduser("~/.cache"),
+RTTY_TX_FILE = os.path.join(cache_root(),
                             "ic7300-scope", "rtty-emis.wav")
 # message FT8 / FT4 mis en audio avant d'être émis
 FT_TX_FILE = os.path.join(os.path.dirname(RTTY_TX_FILE), "ft-emis.wav")
@@ -435,6 +432,9 @@ def format_frequency(hz):
 
 def find_loopback_stream():
     """Flux d'écoute radio → PC : (index, volume en %, muet, sortie) ou None."""
+    if WINDOWS:
+        e = win_audio.engine
+        return (0, e.listen_volume, e.muted, e.speaker) if e else None
     try:
         out = subprocess.run(["pactl", "-f", "json", "list", "sink-inputs"],
                              capture_output=True, text=True, timeout=2).stdout
@@ -489,6 +489,8 @@ def unload_remote_audio(modules):
 
 def list_microphones(exclude):
     """Entrées son du PC (nom, description), sans les retours et sans la radio."""
+    if WINDOWS:
+        return [(i, name) for i, name in win_audio.devices("input") if i != str(exclude)]
     try:
         out = subprocess.run(["pactl", "-f", "json", "list", "sources"],
                              capture_output=True, text=True, timeout=2).stdout
@@ -503,6 +505,8 @@ def list_microphones(exclude):
 
 def list_outputs(exclude):
     """Sorties son du PC (index, nom, description), sans celles de la radio."""
+    if WINDOWS:
+        return [(i, i, name) for i, name in win_audio.devices("output") if i not in exclude]
     try:
         out = subprocess.run(["pactl", "-f", "json", "list", "sinks"],
                              capture_output=True, text=True, timeout=2).stdout
@@ -523,6 +527,8 @@ def list_outputs(exclude):
 def sink_hw_volume(sink):
     """Vrai si la sortie règle son volume dans la carte son : son retour
     (.monitor) est alors pris avant le volume, sinon après."""
+    if WINDOWS:
+        return False
     try:
         out = subprocess.run(["pactl", "list", "sinks"], capture_output=True, text=True,
                              timeout=2, env={**os.environ, "LC_ALL": "C"}).stdout
@@ -535,6 +541,8 @@ def sink_hw_volume(sink):
 
 
 def sink_volume(sink):
+    if WINDOWS:
+        return win_audio.engine.tx_volume if win_audio.engine else 50
     try:
         out = subprocess.run(["pactl", "get-sink-volume", sink],
                              capture_output=True, text=True, timeout=2).stdout
@@ -591,10 +599,10 @@ class AudioReader(QtCore.QThread):
                f"--rate={RATE}", "--channels=1", "--latency-msec=20",
                "--client-name=IC-7300 Scope"]
         try:
-            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                         stderr=subprocess.PIPE)
-        except FileNotFoundError:
-            self.failed.emit("parec introuvable (paquet pulseaudio-utils)")
+            self.proc = (win_audio.Capture(self.source) if WINDOWS else
+                         subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE))
+        except Exception as exc:
+            self.failed.emit(f"Entrée audio indisponible : {exc}")
             return
         window = np.hanning(FFT_SIZE).astype(np.float32)
         norm = window.sum() / 2
@@ -607,6 +615,8 @@ class AudioReader(QtCore.QThread):
                     err = self.proc.stderr.read().decode(errors="replace").strip()
                     self.failed.emit(f"Flux audio interrompu {err}".strip())
                 break
+            if WINDOWS and win_audio.engine:
+                win_audio.engine.feed(data)
             with self._record_lock:
                 if self._record:
                     self._record.writeframes(data)
@@ -631,6 +641,10 @@ class AudioReader(QtCore.QThread):
                 # arrête ce fil, donc tous les décodeurs
                 self.decoder_state.emit(decoder.status(), float(decoder.pitch or 0.0),
                                         bool(decoder.has_signal), bool(decoder.key_down))
+
+        if WINDOWS and self.proc:
+            self.proc.terminate()
+            self.proc = None
 
     def start_recording(self, path):
         """Enregistre le son de la radio tel quel : WAV mono 16 bits."""
@@ -669,14 +683,14 @@ class InputLevel(QtCore.QThread):
         self._running = True
 
     def run(self):
-        rate = 8000
+        rate = RATE if WINDOWS else 8000
         try:
-            self.proc = subprocess.Popen(
+            self.proc = win_audio.Capture(self.source) if WINDOWS else subprocess.Popen(
                 ["parec", "--raw", f"--device={self.source}", "--format=s16le",
                  f"--rate={rate}", "--channels=1", "--latency-msec=50",
                  "--client-name=IC-7300 Scope niveau TX"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        except FileNotFoundError:
+        except Exception:
             return
         nbytes = rate // 10 * 2
         while self._running:
@@ -2592,6 +2606,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.on_decoder_changed()
         self.audio.start()
 
+        if WINDOWS:
+            self.windows_audio_timer = QtCore.QTimer(self)
+            self.windows_audio_timer.timeout.connect(self.check_windows_audio)
+            self.windows_audio_timer.start(100)
         self.civ = None
         if args.no_cat:
             self.statusBar().showMessage("CAT désactivé")
@@ -2624,6 +2642,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.squelch_open.connect(self.on_squelch)
             self.civ.status.connect(self.statusBar().showMessage)
             self.civ.start()
+
+    def check_windows_audio(self):
+        e = win_audio.engine
+        if self.tx_source.currentData() == "file":
+            self.on_tx_in_level(e.tx_db)
+        if e.listener.error:
+            self.statusBar().showMessage(f"Écoute PC interrompue : {e.listener.error}")
 
     def visible_bins(self):
         return int(self.fmax / BIN_HZ) + 1
@@ -3724,7 +3749,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tx_in_reader.stop()
         self.tx_in_meter.setValue(self.tx_in_meter.minimum)
         self.tx_in_value.setText("")
-        source = self.radio_sink + ".monitor" if is_file else self.tx_source.currentData()
+        source = (None if WINDOWS else self.radio_sink + ".monitor") if is_file else self.tx_source.currentData()
         # le Niveau PC s'ajoute au micro ; au retour de la sortie, seulement
         # s'il est réglé dans la carte son (sinon le retour l'a déjà)
         self.tx_in_gain = not is_file or sink_hw_volume(self.radio_sink)
@@ -3780,10 +3805,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 return
             source = self.tx_source.currentData()
             os.makedirs(RECORD_DIR, exist_ok=True)
-            self.cq_recorder = subprocess.Popen(
-                ["parecord", "--file-format=wav", "--channels=1", "--rate=48000", "--format=s16le",
-                 "--latency-msec=100"]                   # blocs courts : rien de perdu à l'arrêt
-                + ([f"--device={source}"] if source and source != "file" else []) + [tmp])
+            if WINDOWS:
+                try:
+                    if not source or source == "file":
+                        raise ValueError("Choisir un microphone dans Entrée TX")
+                    self.cq_recorder = win_audio.engine.record(source, tmp)
+                except Exception as exc:
+                    button.blockSignals(True)
+                    button.setChecked(False)
+                    button.blockSignals(False)
+                    self.statusBar().showMessage(f"Enregistrement impossible : {exc}")
+                    return
+            else:
+                self.cq_recorder = subprocess.Popen(
+                    ["parecord", "--file-format=wav", "--channels=1", "--rate=48000", "--format=s16le",
+                     "--latency-msec=100"]                   # blocs courts : rien de perdu à l'arrêt
+                    + ([f"--device={source}"] if source and source != "file" else []) + [tmp])
             button.setText("■ FIN ENREG.")
             button.setStyleSheet("background: #c62828; color: white; font-weight: bold;")
             self.cq_record_timer.start(VOICE_CQ_MAX_S * 1000)
@@ -3800,6 +3837,9 @@ class MainWindow(QtWidgets.QMainWindow):
             recorder.wait(3)
         except subprocess.TimeoutExpired:
             recorder.kill()
+        if WINDOWS and recorder.error:
+            self.statusBar().showMessage(f"Enregistrement interrompu : {recorder.error} ; appel précédent conservé")
+            return
         try:
             with wave.open(tmp) as w:
                 seconds = w.getnframes() / w.getframerate()
@@ -3816,7 +3856,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage(f"Appel enregistré ({seconds:.1f} s), rejoué sur la sortie du PC ; "
                                      "APPEL CQ l'émettra")
         sink = self.pc_output.currentData()
-        subprocess.Popen(["paplay"] + ([f"--device={sink}"] if sink else []) + [VOICE_CQ_FILE])
+        if WINDOWS:
+            try:
+                self.cq_preview = win_audio.engine.play(VOICE_CQ_FILE, sink)
+            except Exception as exc:
+                self.statusBar().showMessage(f"Écoute de l’appel impossible : {exc}")
+        else:
+            subprocess.Popen(["paplay"] + ([f"--device={sink}"] if sink else []) + [VOICE_CQ_FILE])
 
     def choose_tx_file(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -3828,6 +3874,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_tx_level(self, value):
         self.tx_level_label.setText(f"{value} %")
+        if WINDOWS:
+            win_audio.engine.tx_volume = value
+            return
         subprocess.run(["pactl", "set-sink-volume", self.radio_sink, f"{value}%"],
                        capture_output=True)
 
@@ -3850,11 +3899,23 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_ptt_button(False)
             self.tx_once = None
             return
+        if WINDOWS:
+            try:
+                if source == "file":
+                    win_audio.sf.info(self.tx_playing)
+                else:
+                    self.tx_loopback = win_audio.engine.microphone(source)
+            except Exception as exc:
+                self.statusBar().showMessage(f"Émission impossible : {exc}")
+                self._set_ptt_button(False)
+                self.tx_once = None
+                return
+        self._mute_listen_for_tx(True)
         self.civ.set_ptt(True, data=self.tx_digital)
         if source == "file":
             # un temps pour que la radio passe en émission avant le son
             QtCore.QTimer.singleShot(400, self._play_tx_file)
-        else:
+        elif not WINDOWS:
             out = subprocess.run(
                 ["pactl", "load-module", "module-loopback", f"source={source}",
                  f"sink={self.radio_sink}", "latency_msec=40",
@@ -4067,6 +4128,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ptt_button.setChecked(True)
 
     def _play_tx_file(self):
+        if WINDOWS:
+            if self.tx_active:
+                try:
+                    self.tx_player = win_audio.engine.play(self.tx_playing, self.radio_sink, transmit=True)
+                    if self.tx_playing == VOICE_CQ_FILE and self.cq_monitor_button.isChecked():
+                        self.tx_monitor = win_audio.engine.play(self.tx_playing, self.pc_output.currentData())
+                except Exception as exc:
+                    self.stop_tx(f"Émission arrêtée : {exc}")
+            return
         if self.tx_active:
             self.tx_player = subprocess.Popen(
                 ["paplay", f"--device={self.radio_sink}", self.tx_playing])
@@ -4085,8 +4155,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tx_monitor.terminate()
             self.tx_monitor = None
         if self.tx_loopback:
-            subprocess.run(["pactl", "unload-module", self.tx_loopback],
-                           capture_output=True)
+            if WINDOWS:
+                self.tx_loopback.terminate()
+            else:
+                subprocess.run(["pactl", "unload-module", self.tx_loopback],
+                               capture_output=True)
             self.tx_loopback = None
         if self.civ:
             self.civ.set_ptt(False)
@@ -4122,7 +4195,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if elapsed > self.tx_limit:
             self.stop_tx(f"Émission coupée au bout de {elapsed / 60:.0f} min")
         elif self.tx_player and self.tx_player.poll() is not None:
-            self.stop_tx("Fichier émis en entier")
+            error = getattr(self.tx_player, "error", "")
+            self.stop_tx(f"Erreur audio : {error}" if error else "Fichier émis en entier")
+        elif WINDOWS and self.tx_loopback and self.tx_loopback.poll() is not None:
+            self.stop_tx(f"Microphone interrompu : {self.tx_loopback.error}")
 
     def on_transmitting(self, tx):
         # émission lancée aussi par le PTT de la radio, une pédale ou le VOX
@@ -4212,6 +4288,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _pactl_stream(self, *args):
         """Commande pactl sur le flux d'écoute ; le retrouve s'il a changé."""
+        if WINDOWS:
+            e = win_audio.engine
+            if e is None:
+                return
+            try:
+                if args[0] == "set-sink-input-volume":
+                    e.listen_volume = int(args[1].rstrip("%"))
+                elif args[0] == "set-sink-input-mute":
+                    e.muted = args[1] == "1"
+                elif args[0] == "move-sink-input":
+                    e.move_speaker(args[1])
+            except Exception as exc:
+                self.statusBar().showMessage(f"Écoute PC : {exc}")
+            return
         for attempt in range(2):
             if attempt or not self.loopback:
                 self.loopback = find_loopback_stream()
@@ -4670,7 +4760,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def open_record_folder(self):
         os.makedirs(RECORD_DIR, exist_ok=True)
-        subprocess.Popen(["xdg-open", RECORD_DIR])
+        open_folder(RECORD_DIR)
 
     def closeEvent(self, event):
         self._remember_band()
@@ -4686,7 +4776,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.civ:
             self.civ.stop()
         # écoute rendue non muette, sinon PipeWire la garde coupée au lancement suivant
-        self._pactl_stream("set-sink-input-mute", "0")
+        if WINDOWS:
+            if getattr(self, "cq_recorder", None):
+                self.cq_recorder.terminate()
+            if getattr(self, "cq_preview", None):
+                self.cq_preview.terminate()
+            win_audio.engine.close()
+        else:
+            self._pactl_stream("set-sink-input-mute", "0")
         super().closeEvent(event)
 
 
@@ -5100,6 +5197,8 @@ def main():
                         help="radio branchée sur un autre PC du réseau, qui fait "
                              "tourner cat_server.py et partage son son")
     args = parser.parse_args()
+    if WINDOWS and (args.remote or "://" in args.port):
+        parser.error("La version Windows utilise uniquement le câble USB local")
     remote_modules = []
     if args.remote:
         try:
@@ -5119,11 +5218,18 @@ def main():
     app.setPalette(dark_palette())
     # look radio : boutons métal, interrupteurs à voyant, afficheurs verts, curseurs chromés
     app.setStyleSheet(look_radio.style())
+    if WINDOWS:
+        from windows_setup import configure
+        if not configure(args):
+            return
     window = MainWindow(args)
     window.show()
     # kill, Ctrl+C ou fin de session : fermer la fenêtre pour remettre la
     # radio comme on l'a trouvée ; le minuteur laisse Python voir le signal
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signals = [signal.SIGTERM, signal.SIGINT]
+    if hasattr(signal, "SIGHUP"):
+        signals.append(signal.SIGHUP)
+    for sig in signals:
         signal.signal(sig, lambda *_: window.close())
     wake = QtCore.QTimer()
     wake.timeout.connect(lambda: None)

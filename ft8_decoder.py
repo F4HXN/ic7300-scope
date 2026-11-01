@@ -18,6 +18,7 @@ import os
 import queue
 import re
 import shutil
+from platform_support import WINDOWS, wsjtx_program, subprocess_options
 import subprocess
 import tempfile
 import threading
@@ -34,6 +35,8 @@ LINE = re.compile(r"^(\d{6})\s+(-?\d+)\s+(-?[\d.]+)\s+(\d+)\s+[~+]\s+(.*?)\s*$")
 
 
 def clock_synchronized():
+    if WINDOWS:
+        return None  # La synchronisation Windows est vérifiée par l'opérateur.
     try:
         out = subprocess.run(["timedatectl", "show", "-p", "NTPSynchronized",
                               "--value"], capture_output=True, text=True,
@@ -54,7 +57,8 @@ class Ft8Decoder:
     def __init__(self, rate):
         self.rate = rate
         self.auto_pitch = True
-        self.available = shutil.which("jt9") is not None
+        self.executable = wsjtx_program("jt9")
+        self.available = self.executable is not None
         self.synchronized = clock_synchronized()
         self._dir = tempfile.mkdtemp(prefix="ic7300-ft8-")
         self._buffer = np.zeros(0, np.float32)
@@ -168,10 +172,10 @@ class Ft8Decoder:
                 w.setframerate(JT9_RATE)
                 w.writeframes(pcm.tobytes())
             result = subprocess.run(
-                ["jt9", self.MODE_FLAG, "-d", str(self.EARLY_DEPTH if early else DEPTH),
+                [self.executable, self.MODE_FLAG, "-d", str(self.EARLY_DEPTH if early else DEPTH),
                  "-p", str(int(self.SLOT)),
                  "-a", self._dir, "-t", self._dir, path],
-                capture_output=True, text=True, timeout=self.SLOT * 2, cwd=self._dir)
+                capture_output=True, text=True, timeout=self.SLOT * 2, cwd=self._dir, **subprocess_options())
             os.remove(path)
             lines = []
             # les messages du décodage anticipé ne sont pas répétés ensuite

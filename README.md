@@ -17,6 +17,10 @@ dans une seule fenêtre.
 
 ---
 
+**Windows, connexion USB locale :** une version expérimentale est disponible
+avec sélection du port COM et audio Windows. Voir [WINDOWS.md](WINDOWS.md)
+pour l'installation et les essais matériels restant à effectuer.
+
 ## Sommaire
 
 - [Aperçu](#aperçu)
