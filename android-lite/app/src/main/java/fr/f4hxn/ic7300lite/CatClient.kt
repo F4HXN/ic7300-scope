@@ -10,7 +10,14 @@ import kotlin.concurrent.thread
  * Le serveur n'accepte qu'un client et met les suivants en attente : une liaison
  * ouverte sans réponse de la radio est donc annoncée, pas prise pour un succès.
  */
-class CatClient {
+class CatClient(private val emissionMaxMs: Long = 180_000) {
+    @Volatile var enEmission = false; private set       // demandé par l'appli
+    @Volatile var radioEmet = false; private set        // relu sur la radio
+    @Volatile var depuis = 0L; private set
+    @Volatile var limiteAtteinte = false; private set
+    @Volatile private var menuLu: Int? = null
+    @Volatile private var menuSauve: Int? = null
+    private val verrouEmission = Any()
     @Volatile var etat = "Déconnecté"; private set
     @Volatile var connecte = false; private set
     @Volatile var frequence = 0L; private set
@@ -20,6 +27,8 @@ class CatClient {
     @Volatile var vfo: String? = null; private set      // la radio ne dit pas lequel est actif
     @Volatile var memoires = emptyMap<Int, Memoire>(); private set
     @Volatile var lecture = 0; private set              // canal en cours de lecture, 0 sinon
+    @Volatile var spectre: Spectre? = null; private set
+    private val assembleur = AssembleurSpectre()
 
     private val ecriture = Executors.newSingleThreadExecutor()   // garde l'ordre des trames
     @Volatile private var socket: Socket? = null
@@ -60,14 +69,20 @@ class CatClient {
     }
 
     fun fermer() {
+        emettre(false)
         val s = socket
         socket = null
+        spectre = null
         connecte = false
         enMarche = false
         aLire.clear()
         lecture = 0
         etat = "Déconnecté"
-        runCatching { s?.close() }
+        // la radio cesse d'envoyer son scope, puis on ferme, dans l'ordre des écritures
+        if (s != null) ecriture.execute {
+            runCatching { s.getOutputStream().write(trame(0x27, 0x11, 0x00)) }
+            runCatching { s.close() }
+        }
     }
 
     private fun recevoir(s: Socket) {
@@ -89,9 +104,15 @@ class CatClient {
     private fun interroger(s: Socket, hote: String, port: Int, debut: Long) {
         var tour = 0
         while (socket === s && !s.isClosed) {
+            if (enEmission && System.currentTimeMillis() - depuis > emissionMaxMs) {
+                limiteAtteinte = true
+                emettre(false)
+            }
             lireCanalSuivant()
             if (canalAttendu == 0) {
                 envoyer(0x15, 0x02)
+                envoyer(0x1C, 0x00)
+                if (tour % 10 == 0) envoyer(0x27, 0x11, 0x01)   // scope vers le CI-V, redit si la radio a redémarré
                 if (tour % 3 == 0) {
                     envoyer(0x03)
                     envoyer(0x04)
@@ -141,6 +162,10 @@ class CatClient {
         }
         derniereReponse = System.currentTimeMillis()
         when {
+            cmd == 0x1C && d.size == 2 && d[0] == 0x00 -> radioEmet = d[1] != 0
+            cmd == 0x1A && d.size == 4 && d[0] == 0x05 && d[1] == 0x00 && d[2] == 0x66 -> menuLu = d[3]
+            cmd == 0x27 && d.size >= 4 && d[0] == 0x00 ->
+                assembleur.ajouter(bcdBe(d.subList(2, 3)).toInt(), bcdBe(d.subList(3, 4)).toInt(), d.drop(4))?.let { spectre = it }
             cmd in listOf(0x00, 0x03) && d.size == 5 -> {
                 // juste après un réglage, une réponse ancienne ferait reculer l'affichage
                 if (System.currentTimeMillis() - frequenceReglee > 600) frequence = bcdLe(d)
@@ -185,13 +210,54 @@ class CatClient {
 
     private fun envoyer(vararg donnees: Int) = envoyerBrut(trame(*donnees))
 
+    /**
+     * Comme l'appli du PC : hors mode data, la radio prend le son sur le menu DATA OFF MOD ;
+     * on le met sur USB le temps de l'émission, puis on le remet.
+     */
+    fun emettre(on: Boolean) {
+        val s = socket ?: return
+        synchronized(verrouEmission) {
+            if (on == enEmission) return
+            enEmission = on
+            if (on) {
+                limiteAtteinte = false
+                depuis = System.currentTimeMillis()
+                menuLu = null
+                menuSauve = null
+                envoyer(0x1A, 0x05, 0x00, 0x66)
+                thread(isDaemon = true) {
+                    Thread.sleep(150)
+                    synchronized(verrouEmission) {
+                        if (!enEmission || socket !== s) return@thread
+                        val lu = menuLu
+                        if (lu != null && lu != 0x03) {
+                            menuSauve = lu
+                            envoyer(0x1A, 0x05, 0x00, 0x66, 0x03)
+                        }
+                        envoyer(0x1C, 0x00, 0x01)
+                    }
+                }
+            } else {
+                envoyer(0x1C, 0x00, 0x00)
+                menuSauve?.let { envoyer(0x1A, 0x05, 0x00, 0x66, it) }
+                menuSauve = null
+            }
+        }
+    }
+
     fun regler(hz: Long) {
+        if (enEmission) return
         frequenceReglee = System.currentTimeMillis()
         frequence = hz
         envoyer(0x05, *versBcdLe(hz))
     }
 
+    fun decaler(pas: Long, sens: Int) {
+        if (frequence > 0) regler(frequenceDecalee(frequence, pas, sens))
+    }
+
     fun changerMode(nom: String) {
+        if (enEmission) return
         val data = nom.endsWith("-D")
         val base = nom.removeSuffix("-D")
         val code = MODES.entries.firstOrNull { it.value == base }?.key ?: return
@@ -200,6 +266,9 @@ class CatClient {
             envoyer(0x1A, 0x06, if (data) 1 else 0, if (data) filtre else 0)
         }
     }
+
+    /** Largeur du scope, donnée en demi-largeur comme le veut la radio (mode centré). */
+    fun reglerLargeur(demiHz: Long) = envoyer(0x27, 0x15, 0x00, *versBcdLe(demiHz))
 
     fun choisirVfo(nom: String) {
         envoyer(0x07, if (nom == "A") 0x00 else 0x01)
