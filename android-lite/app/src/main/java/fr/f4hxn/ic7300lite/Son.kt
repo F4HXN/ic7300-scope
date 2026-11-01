@@ -32,6 +32,7 @@ class Son {
     @Volatile var etat = "Son coupé"; private set
     @Volatile var enEcoute = false; private set
     @Volatile var volume = 70
+    @Volatile var muet = false      // pendant l'émission : pas de larsen avec le micro
     @Volatile private var socket: Socket? = null
     @Volatile private var session = 0
 
@@ -86,7 +87,7 @@ class Son {
                 val total = bout + lus
                 val pair = total and 1.inv()
                 etat = "Son : à l'écoute"
-                amplifier(bloc, pair, gainDuVolume(volume))
+                amplifier(bloc, pair, if (muet) 0f else gainDuVolume(volume))
                 piste.write(bloc, 0, pair)
                 bout = total - pair
                 if (bout == 1) bloc[0] = bloc[pair]

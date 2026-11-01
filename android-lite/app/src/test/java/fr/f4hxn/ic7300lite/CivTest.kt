@@ -44,4 +44,59 @@ class CivTest {
         amplifier(o, 4, 4f)
         assertArrayEquals(byteArrayOf(0xFF.toByte(), 0x7F, 0x00, 0x80.toByte()), o)  // bridé, sans déborder
     }
+
+    @Test fun pas() {
+        assertEquals(14_075_000L, frequenceDecalee(14_074_123, 1000, 1))
+        assertEquals(14_074_000L, frequenceDecalee(14_074_123, 1000, -1))
+        assertEquals(14_073_000L, frequenceDecalee(14_074_000, 1000, -1))
+        assertEquals(30_000L, frequenceDecalee(30_000, 1000, -1))
+        assertEquals(74_800_000L, frequenceDecalee(74_800_000, 1_000_000, 1))
+    }
+
+    @Test fun spectre() {
+        val a = AssembleurSpectre()
+        val bords = listOf(0) + versBcdLe(14_074_000).toList() + versBcdLe(25_000).toList()
+        assertNull(a.ajouter(1, 3, bords))
+        assertNull(a.ajouter(2, 3, listOf(10, 20)))
+        val r = a.ajouter(3, 3, listOf(30))!!
+        assertArrayEquals(intArrayOf(10, 20, 30), r.points)
+        assertEquals(14_049_000L, r.bas)
+        assertEquals(14_099_000L, r.haut)
+        // trame perdue : balayage abandonné
+        a.ajouter(1, 3, bords)
+        assertNull(a.ajouter(3, 3, listOf(30)))
+    }
+
+    @Test fun cascade() {
+        assertEquals(0xFF05080A.toInt(), couleurCascade(0, 160))
+        assertEquals(0xFFF44336.toInt(), couleurCascade(160, 160))
+        assertEquals(0xFFF44336.toInt(), couleurCascade(500, 160))
+        val c = Cascade(3)
+        c.ajouter(intArrayOf(0, 160), 160)
+        c.ajouter(intArrayOf(160, 0), 160)
+        assertEquals(6, c.pixels.size)
+        assertEquals(0xFFF44336.toInt(), c.pixels[0])       // récent en haut
+        assertEquals(0xFF05080A.toInt(), c.pixels[2])       // ancien, une ligne plus bas
+        assertEquals(0xFFF44336.toInt(), c.pixels[3])
+        c.ajouter(intArrayOf(1, 2, 3), 160)                 // autre largeur : on repart
+        assertEquals(9, c.pixels.size)
+    }
+
+    @Test fun regle() {
+        assertEquals(listOf(7_354_000L, 7_356_000L, 7_358_000L, 7_360_000L, 7_362_000L), graduations(7_353_500, 7_363_500))
+        for ((a, b) in listOf(7_357_500L to 7_362_500L, 7_353_500L to 7_363_500L, 7_140_500L to 7_190_500L, 6_628_500L to 7_628_500L)) {
+            val g = graduations(a, b)
+            assertTrue("$a $g", g.size in 3..8 && g.all { it in a..b })
+        }
+        assertTrue(graduations(5, 5).isEmpty())
+        assertEquals("7.355", texteGraduation(7_355_000))
+        assertEquals("14.074", texteGraduation(14_074_000))
+    }
+
+    @Test fun doigt() {
+        assertEquals(100L, pasTactile(1_000_000, 7_140_500, 7_190_500))   // 1 MHz sur ±25 kHz
+        assertEquals(10L, pasTactile(1_000, 7_353_500, 7_363_500))        // ±5 kHz
+        assertEquals(10L, pasTactile(10, 6_628_500, 7_628_500))           // le pas fin reste
+        assertEquals(5_000L, pasTactile(1_000_000, 6_628_500, 7_628_500)) // ±500 kHz
+    }
 }
