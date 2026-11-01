@@ -95,6 +95,11 @@ monitor = None
 
 def radio_port():
     """Port CI-V de l'IC-7300 branchée, quel que soit son numéro de série."""
+    if sys.platform == "win32":
+        from serial.tools import list_ports
+        ports = [p.device for p in list_ports.comports()
+                 if "IC-7300" in (p.description or "").upper()]
+        return ports[0] if len(ports) == 1 else ""
     ports = sorted(glob.glob("/dev/serial/by-id/*IC-7300*-if00-port0"))
     return ports[0] if ports else "/dev/ttyUSB0"
 

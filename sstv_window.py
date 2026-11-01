@@ -11,14 +11,10 @@ import sstv
 import wefax
 
 
+from platform_support import user_folder, open_folder
+
 def pictures_dir():
-    import subprocess
-    try:
-        out = subprocess.run(["xdg-user-dir", "PICTURES"], capture_output=True,
-                             text=True, timeout=2).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        out = ""
-    return out or os.path.expanduser("~/Pictures")
+    return user_folder("PICTURES")
 
 
 SSTV_DIR = os.path.join(pictures_dir(), "SSTV")
@@ -390,7 +386,7 @@ class SstvWindow(QtWidgets.QWidget):
     def _open_folder(self, path):
         import subprocess
         os.makedirs(path, exist_ok=True)
-        subprocess.Popen(["xdg-open", path])
+        open_folder(path)
 
     # -- émission
 

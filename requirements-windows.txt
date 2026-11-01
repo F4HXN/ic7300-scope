@@ -1,0 +1,8 @@
+PyQt5>=5.15,<6
+pyqtgraph>=0.13,<0.15
+numpy>=1.26,<3
+scipy>=1.11,<2
+pyserial>=3.5,<4
+sounddevice>=0.5.1,<0.6
+soundfile>=0.13,<0.14
+Pillow>=10,<13
