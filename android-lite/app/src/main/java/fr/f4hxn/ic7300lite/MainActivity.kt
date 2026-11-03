@@ -328,7 +328,10 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
             run {
                 // en petite fenêtre, l'état et le bouton passent à la ligne au lieu d'être coupés
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("IC-7300  /  SCOPE LITE", Modifier.align(Alignment.CenterVertically), color = AMBRE, fontWeight = FontWeight.Bold, fontSize = 24.sp, softWrap = false)
+                    Row(Modifier.align(Alignment.CenterVertically), verticalAlignment = Alignment.Bottom) {
+                        Text("IC-7300  /  SCOPE LITE", color = AMBRE, fontWeight = FontWeight.Bold, fontSize = 24.sp, softWrap = false)
+                        Text("  by F4HXN", color = AMBRE.copy(alpha = 0.7f), fontWeight = FontWeight.Bold, fontSize = 14.sp, softWrap = false, modifier = Modifier.padding(bottom = 3.dp))
+                    }
                     Text(etat, Modifier.align(Alignment.CenterVertically), color = if (actif) VERT else Color.LightGray, maxLines = 2)
                     Button(onClick = { if (connecte) client.fermer() else client.connecter(hote, port) }) {
                         Text(if (connecte) "DÉCONNECTER" else "CONNECTER", softWrap = false)

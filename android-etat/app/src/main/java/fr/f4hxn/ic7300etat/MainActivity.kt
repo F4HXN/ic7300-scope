@@ -174,7 +174,7 @@ fun Infos(adresse: String, etat: Etat?, fermer: () -> Unit) {
     AlertDialog(
         onDismissRequest = fermer,
         confirmButton = { TextButton(onClick = fermer) { Text("Fermer") } },
-        title = { Text("IC-7300 État ${BuildConfig.VERSION_NAME}") },
+        title = { Text("IC-7300 État ${BuildConfig.VERSION_NAME} by F4HXN") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Affiche l'état du serveur de l'IC-7300 sans jamais toucher à la radio : " +
