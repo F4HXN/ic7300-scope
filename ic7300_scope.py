@@ -45,7 +45,8 @@ DEFAULT_SOURCE = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-st
 RADIO_SINK = "alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.iec958-stereo"
 DEFAULT_PORT = radio_port()
 
-# Flux de l'écoute permanente (~/.config/pipewire/pipewire.conf.d/50-ic7300-loopback.conf)
+# Flux de l'écoute radio → PC : créé par l'appli et retiré à sa fermeture
+# (ou permanent avec ~/.config/pipewire/pipewire.conf.d/50-ic7300-loopback.conf)
 LOOPBACK_STREAM = "ic7300_loopback_out"
 # Radio sur un autre PC (--remote) : serveur CAT (cat_server.py) et son
 # PipeWire en réseau (pipewire-pulse.conf.d/50-reseau.conf) sur ce PC-là
@@ -474,6 +475,23 @@ def remote_audio(host):
             raise RuntimeError(f"{command[0]} : {error or 'échec'}")
         modules.append(out.stdout.strip())
     return modules
+
+
+def local_listen(source):
+    """Radio branchée sur ce PC : crée l'écoute radio → sortie par défaut.
+    Renvoie les modules à décharger à la fermeture (liste vide si échec)."""
+    try:
+        out = subprocess.run(
+            ["pactl", "load-module", "module-loopback", f"source={source}",
+             "latency_msec=60", "source_dont_move=true",
+             f"sink_input_properties=node.name={LOOPBACK_STREAM}"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    time.sleep(0.3)                 # le flux apparaît un peu après le module
+    return [out.stdout.strip()]
 
 
 def unload_remote_audio(modules):
@@ -5207,6 +5225,9 @@ def main():
             sys.exit(f"Son du PC distant {args.remote} inaccessible : {e}")
         args.source, args.sink = REMOTE_RX, REMOTE_TX
         args.port = f"socket://{args.remote}:{CAT_TCP_PORT}"
+    elif not WINDOWS and find_loopback_stream() is None:
+        # radio en USB sur ce PC : l'écoute n'existe que tant que l'appli tourne
+        remote_modules = local_listen(args.source)
 
     pg.setConfigOptions(imageAxisOrder="row-major", antialias=True,
                         background="#101418")
