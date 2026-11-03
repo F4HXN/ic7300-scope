@@ -2,6 +2,7 @@ package fr.f4hxn.ic7300etat
 
 import android.content.Context
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
@@ -17,11 +18,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -46,23 +52,50 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val prefs = getSharedPreferences("reglages", Context.MODE_PRIVATE)
+        pleinEcran(prefs.getBoolean("plein_ecran", false))
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = FOND, surface = CARTE)) {
                 Ecran(
                     adresseInitiale = prefs.getString("adresse", ADRESSE_DEFAUT) ?: ADRESSE_DEFAUT,
                     enregistrer = { prefs.edit().putString("adresse", it).apply() },
+                    pleinEcranInitial = prefs.getBoolean("plein_ecran", false),
+                    basculerPleinEcran = {
+                        pleinEcran(it)
+                        prefs.edit().putBoolean("plein_ecran", it).apply()
+                    },
                 )
             }
+        }
+    }
+
+    /** Plein écran : barres système masquées (glisser depuis un bord pour les revoir)
+     *  et écran gardé allumé, pour un affichage permanent sur la tablette. */
+    private fun pleinEcran(actif: Boolean) {
+        val barres = WindowCompat.getInsetsController(window, window.decorView)
+        if (actif) {
+            barres.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            barres.hide(WindowInsetsCompat.Type.systemBars())
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            barres.show(WindowInsetsCompat.Type.systemBars())
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 }
 
 @Composable
-fun Ecran(adresseInitiale: String, enregistrer: (String) -> Unit) {
+fun Ecran(
+    adresseInitiale: String,
+    enregistrer: (String) -> Unit,
+    pleinEcranInitial: Boolean,
+    basculerPleinEcran: (Boolean) -> Unit,
+) {
     var adresse by remember { mutableStateOf(adresseInitiale) }
     var etat by remember { mutableStateOf<Etat?>(null) }
     var erreur by remember { mutableStateOf<String?>(null) }
     var reglages by remember { mutableStateOf(false) }
+    var infos by remember { mutableStateOf(false) }
+    var pleinEcran by remember { mutableStateOf(pleinEcranInitial) }
 
     LaunchedEffect(adresse) {
         etat = null
@@ -91,8 +124,15 @@ fun Ecran(adresseInitiale: String, enregistrer: (String) -> Unit) {
                     color = GRIS, fontSize = 13.sp,
                 )
             }
-            TextButton(onClick = { reglages = !reglages }) { Text(if (reglages) "Fermer" else "⚙", color = TEXTE, fontSize = 18.sp) }
+            BoutonHaut(if (pleinEcran) "⛶ Quitter" else "⛶", "Plein écran") {
+                pleinEcran = !pleinEcran
+                basculerPleinEcran(pleinEcran)
+            }
+            BoutonHaut("ⓘ", "Informations") { infos = true }
+            BoutonHaut(if (reglages) "Fermer" else "⚙", "Paramètres") { reglages = !reglages }
         }
+
+        if (infos) Infos(adresse, etat) { infos = false }
 
         if (reglages) Reglages(adresse) {
             adresse = it
@@ -113,6 +153,53 @@ fun Ecran(adresseInitiale: String, enregistrer: (String) -> Unit) {
         Indicateurs(e)
         PanneauRadio(e)
         Commandes(e, Modifier.weight(1f))
+    }
+}
+
+@Composable
+fun BoutonHaut(texte: String, description: String, action: () -> Unit) {
+    TextButton(onClick = action, modifier = Modifier.semantics { contentDescription = description }) {
+        Text(texte, color = TEXTE, fontSize = 18.sp)
+    }
+}
+
+/** Fenêtre « Informations » : version, serveur et légende des couleurs. */
+@Composable
+fun Infos(adresse: String, etat: Etat?, fermer: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = fermer,
+        confirmButton = { TextButton(onClick = fermer) { Text("Fermer") } },
+        title = { Text("IC-7300 État ${BuildConfig.VERSION_NAME}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Affiche l'état du serveur de l'IC-7300 sans jamais toucher à la radio : " +
+                    "l'appli lit seulement le service etat_serveur.py, rafraîchi toutes les 2 s.")
+                Text("Serveur : $adresse" + (etat?.let { " (${it.hote})" } ?: ""))
+                etat?.let {
+                    Text("Heure du serveur : " +
+                        SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.FRANCE).format(Date((it.heure * 1000).toLong())))
+                }
+                Text("Couleurs", fontWeight = FontWeight.Bold)
+                Legende(BLEU, "radio pilotée par un PC distant (cat_server, port 7300)")
+                Legende(JAUNE, "appli ouverte sur le PC de la radio (USB direct)")
+                Legende(VERT, "radio libre, ou indicateur en marche")
+                Legende(ROUGE, "indicateur arrêté, émission en cours")
+                Text("Fréquence, mode et S-mètre ne sont connus que pendant un pilotage à distance : " +
+                    "grisés, ce sont les dernières valeurs vues.", fontSize = 13.sp)
+                Text("⛶ plein écran : barres masquées et écran gardé allumé ; " +
+                    "glisser depuis un bord pour revoir les barres.", fontSize = 13.sp)
+                Text("F4HXN — www.f4hxn.fr — GPL v3", color = GRIS, fontSize = 12.sp)
+            }
+        },
+    )
+}
+
+@Composable
+fun Legende(couleur: Color, texte: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Pastille(couleur)
+        Spacer(Modifier.width(8.dp))
+        Text(texte, fontSize = 13.sp)
     }
 }
 
