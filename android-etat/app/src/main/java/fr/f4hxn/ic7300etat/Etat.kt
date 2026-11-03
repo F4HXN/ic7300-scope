@@ -75,6 +75,8 @@ fun lireEtat(adresse: String): Etat {
 val POSTES = mapOf(
     "192.168.1.10" to "PC principal",
     "127.0.0.1" to "le PC radio lui-même",
+    "192.168.27.66" to "tablette (VPN)",
+    "192.168.27.67" to "téléphone (VPN)",
 )
 
 fun nomPoste(ip: String) = POSTES[ip]?.let { "$it ($ip)" } ?: ip

@@ -23,6 +23,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
@@ -110,21 +112,24 @@ fun Ecran(
         }
     }
 
+    // téléphone en portrait : voyants sur deux lignes, textes resserrés
+    val etroit = LocalConfiguration.current.screenWidthDp < 600
     Column(
-        Modifier.fillMaxSize().background(FOND).systemBarsPadding().padding(16.dp),
+        Modifier.fillMaxSize().background(FOND).systemBarsPadding().padding(if (etroit) 10.dp else 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Pastille(if (erreur == null && etat != null) VERT else ROUGE, 14)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text("Serveur IC-7300", color = TEXTE, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("Serveur IC-7300", color = TEXTE, fontSize = if (etroit) 19.sp else 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
                 Text(
-                    etat?.let { "${it.hote} — $adresse" } ?: adresse,
-                    color = GRIS, fontSize = 13.sp,
+                    if (etroit) adresse else etat?.let { "${it.hote} — $adresse" } ?: adresse,
+                    color = GRIS, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            BoutonHaut(if (pleinEcran) "⛶ Quitter" else "⛶", "Plein écran") {
+            // plein écran : seulement sur tablette, le téléphone manque de place en haut
+            if (!etroit) BoutonHaut(if (pleinEcran) "⛶ Quitter" else "⛶", "Plein écran") {
                 pleinEcran = !pleinEcran
                 basculerPleinEcran(pleinEcran)
             }
@@ -150,9 +155,9 @@ fun Ecran(
         }
 
         Utilisation(e)
-        Indicateurs(e)
-        PanneauRadio(e)
-        Commandes(e, Modifier.weight(1f))
+        Indicateurs(e, etroit)
+        PanneauRadio(e, etroit)
+        Commandes(e, etroit, Modifier.weight(1f))
     }
 }
 
@@ -186,7 +191,7 @@ fun Infos(adresse: String, etat: Etat?, fermer: () -> Unit) {
                 Legende(ROUGE, "indicateur arrêté, émission en cours")
                 Text("Fréquence, mode et S-mètre ne sont connus que pendant un pilotage à distance : " +
                     "grisés, ce sont les dernières valeurs vues.", fontSize = 13.sp)
-                Text("⛶ plein écran : barres masquées et écran gardé allumé ; " +
+                Text("⛶ plein écran (tablette) : barres masquées et écran gardé allumé ; " +
                     "glisser depuis un bord pour revoir les barres.", fontSize = 13.sp)
                 Text("F4HXN — www.f4hxn.fr — GPL v3", color = GRIS, fontSize = 12.sp)
             }
@@ -250,13 +255,19 @@ fun Utilisation(e: Etat) {
 }
 
 @Composable
-fun Indicateurs(e: Etat) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        Indicateur("Serveur CAT", e.serviceCat && e.portCat,
-            if (e.serviceCat && e.portCat) "port 7300" else "arrêté", Modifier.weight(1f))
-        Indicateur("Radio USB", e.radioUsb, if (e.radioUsb) "branchée" else "absente", Modifier.weight(1f))
-        Indicateur("Son réseau", e.sonReseau, if (e.sonReseau) "port 4713" else "coupé", Modifier.weight(1f))
-        Indicateur("Surveillance", e.surveillance, if (e.surveillance) "active" else "sans cat_server", Modifier.weight(1f))
+fun Indicateurs(e: Etat, etroit: Boolean) {
+    val cartes: List<@Composable (Modifier) -> Unit> = listOf(
+        { m -> Indicateur("Serveur CAT", e.serviceCat && e.portCat, if (e.serviceCat && e.portCat) "port 7300" else "arrêté", m) },
+        { m -> Indicateur("Radio USB", e.radioUsb, if (e.radioUsb) "branchée" else "absente", m) },
+        { m -> Indicateur("Son réseau", e.sonReseau, if (e.sonReseau) "port 4713" else "coupé", m) },
+        { m -> Indicateur("Surveillance", e.surveillance, if (e.surveillance) "active" else "sans cat_server", m) },
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        cartes.chunked(if (etroit) 2 else 4).forEach { ligne ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ligne.forEach { it(Modifier.weight(1f)) }
+            }
+        }
     }
 }
 
@@ -273,7 +284,7 @@ fun Indicateur(nom: String, ok: Boolean, detail: String, modifier: Modifier) {
 }
 
 @Composable
-fun PanneauRadio(e: Etat) {
+fun PanneauRadio(e: Etat, etroit: Boolean) {
     val age = e.majRadio?.let { e.heure - it }
     val frais = e.client != null && age != null && age < VALEURS_FRAICHES_S
     val couleur = if (frais) TEXTE else GRIS
@@ -281,16 +292,16 @@ fun PanneauRadio(e: Etat) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 e.frequence?.let { texteFrequence(it) } ?: "— fréquence inconnue —",
-                color = couleur, fontSize = 34.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
+                color = couleur, fontSize = if (etroit) 24.sp else 34.sp, maxLines = 1, softWrap = false, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold,
             )
-            Spacer(Modifier.width(16.dp))
-            e.mode?.let { Text(it, color = if (frais) VERT else GRIS, fontSize = 22.sp, fontWeight = FontWeight.Bold) }
+            Spacer(Modifier.width(if (etroit) 8.dp else 16.dp))
+            e.mode?.let { Text(it, color = if (frais) VERT else GRIS, fontSize = if (etroit) 18.sp else 22.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false) }
             Spacer(Modifier.weight(1f))
             if (frais && e.emission == true) {
-                Text("ÉMISSION", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp,
+                Text(if (etroit) "TX" else "ÉMISSION", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp,
                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).background(ROUGE).padding(horizontal = 12.dp, vertical = 6.dp))
             } else if (frais) {
-                Text("réception", color = GRIS, fontSize = 16.sp)
+                Text(if (etroit) "RX" else "réception", color = GRIS, fontSize = 16.sp)
             }
         }
         SMetre(e.smetreBrut, e.smetre, frais)
@@ -328,7 +339,7 @@ fun SMetre(brut: Int?, texte: String?, frais: Boolean) {
 }
 
 @Composable
-fun Commandes(e: Etat, modifier: Modifier) {
+fun Commandes(e: Etat, etroit: Boolean, modifier: Modifier) {
     val heure = remember { SimpleDateFormat("HH:mm:ss", Locale.FRANCE) }
     Carte(modifier.fillMaxWidth()) {
         Text("Dernières commandes", color = TEXTE, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
@@ -345,8 +356,9 @@ fun Commandes(e: Etat, modifier: Modifier) {
                 }
                 Row {
                     Text(heure.format(Date((c.t * 1000).toLong())), color = GRIS, fontSize = 13.sp,
-                        fontFamily = FontFamily.Monospace, modifier = Modifier.width(76.dp))
-                    Text(c.sens, color = couleur, fontSize = 13.sp, modifier = Modifier.width(70.dp))
+                        fontFamily = FontFamily.Monospace, maxLines = 1, softWrap = false, modifier = Modifier.width(80.dp))
+                    // téléphone : le sens se lit à la couleur (jaune → radio, bleu ← radio)
+                    if (!etroit) Text(c.sens, color = couleur, fontSize = 13.sp, modifier = Modifier.width(70.dp))
                     Text(c.nom, color = TEXTE, fontSize = 13.sp, modifier = Modifier.weight(1f))
                     Text(c.valeur, color = couleur, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                 }
