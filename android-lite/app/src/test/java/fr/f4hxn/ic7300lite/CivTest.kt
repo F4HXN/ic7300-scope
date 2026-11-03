@@ -99,4 +99,14 @@ class CivTest {
         assertEquals(10L, pasTactile(10, 6_628_500, 7_628_500))           // le pas fin reste
         assertEquals(5_000L, pasTactile(1_000_000, 6_628_500, 7_628_500)) // ±500 kHz
     }
+
+    @Test fun puissance() {
+        assertArrayEquals(intArrayOf(0x00, 0x00), puissanceVersCiv(0))
+        assertArrayEquals(intArrayOf(0x02, 0x55), puissanceVersCiv(100))
+        assertArrayEquals(intArrayOf(0x01, 0x28), puissanceVersCiv(50))
+        assertEquals(100, puissanceDepuisCiv(listOf(0x02, 0x55)))
+        assertEquals(50, puissanceDepuisCiv(listOf(0x01, 0x28)))
+        assertEquals(0, puissanceDepuisCiv(listOf(0x00, 0x00)))
+        for (p in 0..100) assertEquals(p, puissanceDepuisCiv(puissanceVersCiv(p).let { listOf(it[0], it[1]) }))
+    }
 }
