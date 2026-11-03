@@ -16,6 +16,10 @@ import android.os.PowerManager
 /** Le son vit ici plutôt que dans l'écran : il continue quand l'appli passe en arrière-plan. */
 object Radio {
     val son = Son()
+    val client = CatClient()
+    @Volatile var pontActif = false
+    @Volatile var etatPont = ""
+    @Volatile var niveauPont = -96f
 }
 
 /**

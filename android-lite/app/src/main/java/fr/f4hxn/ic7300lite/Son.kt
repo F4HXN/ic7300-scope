@@ -32,6 +32,7 @@ class Son {
     @Volatile var etat = "Son coupé"; private set
     @Volatile var enEcoute = false; private set
     @Volatile var volume = 70
+    @Volatile var sortie: android.media.AudioDeviceInfo? = null    // null : Android choisit
     @Volatile var muet = false      // pendant l'émission : pas de larsen avec le micro
     @Volatile private var socket: Socket? = null
     @Volatile private var session = 0
@@ -77,9 +78,12 @@ class Son {
             s.soTimeout = 5000          // radio ou relais muet : on le dit
             piste.play()
             val entree = s.getInputStream()
+            var appliquee: android.media.AudioDeviceInfo? = null
+            piste.setPreferredDevice(sortie.also { appliquee = it })
             val bloc = ByteArray(1600)
             var bout = 0                // octet impair resté du bloc d'avant
             while (session == moi) {
+                if (sortie !== appliquee) piste.setPreferredDevice(sortie.also { appliquee = it })
                 val attente = entree.available()
                 if (attente > RETARD_MAX) entree.skip(((attente - RETARD_MAX / 2) and 1.inv()).toLong())
                 val lus = entree.read(bloc, bout, bloc.size - bout)

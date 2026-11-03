@@ -4,11 +4,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.media.AudioManager
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,8 +22,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.IntSize
@@ -63,6 +66,27 @@ private val BANDES = listOf(
     Bande("4m", 70_000_000L, 70_500_000L, 70_200_000L, "USB")
 )
 
+/** Choix d'un appareil audio : le menu relit la liste à chaque ouverture (casque branché entre-temps). */
+@Composable
+private fun ChoixAppareil(titre: String, sortie: Boolean, cleInitiale: String, choisir: (Appareil?) -> Unit) {
+    val contexte = LocalContext.current
+    var ouvert by remember { mutableStateOf(false) }
+    var liste by remember { mutableStateOf(emptyList<Appareil>()) }
+    var cle by remember { mutableStateOf(cleInitiale) }
+    // appareil mémorisé : repris au démarrage s'il est encore là
+    LaunchedEffect(Unit) { if (cle.isNotEmpty()) choisir(appareils(contexte, sortie).firstOrNull { it.cle == cle }) }
+    val nom = appareils(contexte, sortie).firstOrNull { it.cle == cle }?.nom ?: "Automatique"
+    Box {
+        OutlinedButton(onClick = { liste = appareils(contexte, sortie); ouvert = true }) { Text("$titre : $nom", fontSize = 14.sp, softWrap = false) }
+        DropdownMenu(expanded = ouvert, onDismissRequest = { ouvert = false }) {
+            DropdownMenuItem(text = { Text("Automatique") }, onClick = { cle = ""; choisir(null); ouvert = false })
+            liste.forEach { a ->
+                DropdownMenuItem(text = { Text(a.nom) }, onClick = { cle = a.cle; choisir(a); ouvert = false })
+            }
+        }
+    }
+}
+
 /** Un appui fait un pas ; maintenu, le bouton répète après une courte attente. */
 @Composable
 private fun BoutonRepete(texte: String, actif: Boolean, action: () -> Unit) {
@@ -84,6 +108,7 @@ private fun BoutonRepete(texte: String, actif: Boolean, action: () -> Unit) {
 /** Largeurs du scope de l'IC-7300 en mode centré : libellé (± kHz) et demi-largeur en Hz. */
 private val LARGEURS = listOf("±2,5" to 2_500L, "±5" to 5_000L, "±10" to 10_000L, "±25" to 25_000L, "±50" to 50_000L, "±100" to 100_000L, "±250" to 250_000L, "±500" to 500_000L)
 
+private const val DEMANDE_PONT = 7
 private const val LIGNES_CASCADE = 70
 private const val NIVEAU_MAX = 160       // niveaux du scope de la radio : 0 à 160
 private const val SON_ADRESSE = "192.168.1.31:7301"
@@ -95,7 +120,7 @@ private fun lireAdresseSon(texte: String): Pair<String, Int> {
 }
 
 class MainActivity : ComponentActivity() {
-    private val client = CatClient()
+    private val client = Radio.client
     private val son = Radio.son
     private var aReprendre = false
 
@@ -105,9 +130,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         volumeControlStream = AudioManager.STREAM_MUSIC    // les touches de volume règlent le son de la radio
         son.volume = reglages().getInt("volume", 70)
+        pleinEcran(reglages().getBoolean("plein_ecran", false))
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = CYAN, background = FOND, surface = Color(0xFF1C252D))) {
-                Ecran(client, son, reglages().getString("hote", "192.168.1.37")!!, reglages().getInt("port", 7300), reglages().getString("son", SON_ADRESSE)!!, reglages().getLong("pas", 1000L), reglages().getFloat("seuil", -30f),
+                Ecran(client, son, reglages().getString("hote", "192.168.1.37")!!, reglages().getInt("port", 7300), reglages().getString("son", SON_ADRESSE)!!, reglages().getLong("pas", 1000L), reglages().getFloat("seuil", -30f), reglages().getString("sortie", "")!!, reglages().getString("entree", "")!!,
                     { v -> reglages().edit().putInt("volume", v).apply() },
                     { p -> reglages().edit().putLong("pas", p).apply() },
                     {
@@ -119,14 +145,53 @@ class MainActivity : ComponentActivity() {
                         val permis = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
                         if (!permis) requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2)
                         permis
-                    })
+                    },
+                    { nom, cle -> reglages().edit().putString(nom, cle).apply() },
+                    { demanderPont() },
+                    reglages().getBoolean("plein_ecran", false),
+                    { actif -> pleinEcran(actif); reglages().edit().putBoolean("plein_ecran", actif).apply() })
             }
+        }
+    }
+
+    /** Plein écran : barres système masquées (glisser depuis un bord pour les revoir)
+     *  et écran gardé allumé. */
+    private fun pleinEcran(actif: Boolean) {
+        val barres = WindowCompat.getInsetsController(window, window.decorView)
+        if (actif) {
+            barres.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            barres.hide(WindowInsetsCompat.Type.systemBars())
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            barres.show(WindowInsetsCompat.Type.systemBars())
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    private fun demanderPont() {
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 2)
+            return
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1)
+        @Suppress("DEPRECATION")
+        startActivityForResult(getSystemService(android.media.projection.MediaProjectionManager::class.java).createScreenCaptureIntent(), DEMANDE_PONT)
+    }
+
+    @Deprecated("Une seule demande, sans dépendance de plus")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == DEMANDE_PONT && resultCode == RESULT_OK && data != null) {
+            lireAdresseSon(reglages().getString("son", SON_ADRESSE)!!).let { (h, p) -> PontService.demarrer(this, resultCode, data, h, p) }
         }
     }
 
     // Le serveur n'accepte qu'un client : appli en arrière-plan, on lui rend la radio
     override fun onStop() {
         super.onStop()
+        // le pont a besoin de la radio pendant que qFT8 est au premier plan
+        if (Radio.pontActif) return
         aReprendre = client.connecte
         client.fermer()
     }
@@ -139,9 +204,15 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseSon: String, pasInitial: Long, seuilInitial: Float,
+private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseSon: String, pasInitial: Long, seuilInitial: Float, cleSortie: String, cleEntree: String,
                   memoriserVolume: (Int) -> Unit, memoriserPas: (Long) -> Unit, demanderNotifications: () -> Unit,
-                  memoriserSeuil: (Float) -> Unit, autoriserMicro: () -> Boolean) {
+                  memoriserSeuil: (Float) -> Unit, autoriserMicro: () -> Boolean, memoriserAppareil: (String, String) -> Unit, demanderPont: () -> Unit,
+                  pleinEcranInitial: Boolean, basculerPleinEcran: (Boolean) -> Unit) {
+    var pleinEcran by remember { mutableStateOf(pleinEcranInitial) }
+    var infos by remember { mutableStateOf(false) }
+    var pontActif by remember { mutableStateOf(false) }
+    var etatPont by remember { mutableStateOf("") }
+    var niveauPont by remember { mutableFloatStateOf(-96f) }
     val contexte = LocalContext.current
     var spectre by remember { mutableStateOf<Spectre?>(null) }
     var etatSon by remember { mutableStateOf(son.etat) }
@@ -178,6 +249,10 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
     var seuil by remember { mutableFloatStateOf(seuilInitial) }
     var niveauMicro by remember { mutableFloatStateOf(-96f) }
     var enEmission by remember { mutableStateOf(false) }
+    var atu by remember { mutableIntStateOf(0) }
+    var voyantTx by remember { mutableStateOf(false) }
+    var puissance by remember { mutableIntStateOf(-1) }
+    var puissanceGlissee by remember { mutableIntStateOf(-1) }    // doigt sur le curseur : la radio ne le fait pas reculer
     var texteEmission by remember { mutableStateOf("") }
     val micro = remember { Micro() }
     val vox = remember { Vox() }
@@ -210,6 +285,12 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
     LaunchedEffect(Unit) {
         while (true) {
             enEmission = client.enEmission
+            pontActif = Radio.pontActif
+            etatPont = Radio.etatPont
+            niveauPont = Radio.niveauPont
+            atu = client.atu
+            voyantTx = client.connecte && (client.enEmission || client.radioEmet)
+            puissance = client.puissance
             val secondes = (System.currentTimeMillis() - client.depuis) / 1000
             texteEmission = when {
                 micro.etat.isNotEmpty() -> micro.etat
@@ -236,8 +317,8 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
         tourCascade++
     }
     Surface(Modifier.fillMaxSize(), color = FOND) {
-        Row(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Column(Modifier.weight(1f).fillMaxHeight().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(Modifier.fillMaxSize().safeDrawingPadding().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            run {
                 // en petite fenêtre, l'état et le bouton passent à la ligne au lieu d'être coupés
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("IC-7300  /  SCOPE LITE", Modifier.align(Alignment.CenterVertically), color = CYAN, fontWeight = FontWeight.Bold, fontSize = 24.sp, softWrap = false)
@@ -245,7 +326,14 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                     Button(onClick = { if (connecte) client.fermer() else client.connecter(hote, port) }) {
                         Text(if (connecte) "DÉCONNECTER" else "CONNECTER", softWrap = false)
                     }
+                    Row(Modifier.align(Alignment.CenterVertically)) {
+                        TextButton(onClick = { pleinEcran = !pleinEcran; basculerPleinEcran(pleinEcran) }) {
+                            Text(if (pleinEcran) "⛶ Quitter" else "⛶", color = Color.White, fontSize = 18.sp, softWrap = false)
+                        }
+                        TextButton(onClick = { infos = true }) { Text("ⓘ", color = Color.White, fontSize = 18.sp) }
+                    }
                 }
+                if (infos) InfosLite(hote, port, adresseSon, etat) { infos = false }
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -400,7 +488,11 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                                 onValueChangeFinished = { memoriserVolume(volume) })
                             Text("$volume %", Modifier.width(70.dp), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
                         }
-                        Text(etatSon, color = if (etatSon.endsWith("écoute")) VERT else Color.LightGray, fontSize = 14.sp)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            ChoixAppareil("Sortie", true, cleSortie) { a -> son.sortie = a?.info; memoriserAppareil("sortie", a?.cle.orEmpty()) }
+                            ChoixAppareil("Entrée", false, cleEntree) { a -> micro.entree = a?.info; memoriserAppareil("entree", a?.cle.orEmpty()) }
+                            Text(etatSon, color = if (etatSon.endsWith("écoute")) VERT else Color.LightGray, fontSize = 14.sp)
+                        }
                     }
                 }
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
@@ -417,17 +509,32 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                                     ptt = false
                                 }
                             }
-                            Button(onClick = {}, enabled = actif && !voxActif, interactionSource = sourcePtt,
+                            Button(onClick = {}, enabled = actif && !voxActif && !pontActif, interactionSource = sourcePtt,
                                 colors = ButtonDefaults.buttonColors(containerColor = if (enEmission) Color(0xFFE5342B) else CYAN, contentColor = if (enEmission) Color.White else Color.Black),
                                 modifier = Modifier.height(56.dp).width(170.dp)) {
                                 Text(if (enEmission) "ÉMISSION" else "PTT", fontWeight = FontWeight.Bold, fontSize = 20.sp, softWrap = false)
                             }
+                            Button(onClick = { client.accorder() }, enabled = actif && !enEmission && atu != 2) { Text(if (atu == 2) "ACCORD…" else "TUNE", softWrap = false) }
+                            FilterChip(selected = atu != 0, enabled = actif && !enEmission && atu != 2, onClick = { client.basculerAtu() }, label = { Text("ATU", fontWeight = if (atu != 0) FontWeight.Bold else FontWeight.Normal) },
+                                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = CYAN, selectedLabelColor = Color.Black,
+                                    disabledSelectedContainerColor = CYAN.copy(alpha = 0.5f), disabledLabelColor = Color.Gray))
                             Text("VOX", color = CYAN, fontWeight = FontWeight.Bold)
-                            Switch(checked = voxActif, enabled = actif, onCheckedChange = { voxActif = it && autoriserMicro() })
+                            Switch(checked = voxActif, enabled = actif && !pontActif, onCheckedChange = { voxActif = it && autoriserMicro() })
                             Text("SEUIL", color = Color.LightGray)
                             Slider(value = seuil, onValueChange = { seuil = it }, Modifier.weight(1f), valueRange = -60f..-10f,
                                 onValueChangeFinished = { memoriserSeuil(seuil) })
                             Text("${seuil.toInt()} dB", Modifier.width(70.dp), color = Color.White, softWrap = false)
+                        }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Text("PUISSANCE", color = CYAN, fontWeight = FontWeight.Bold)
+                            Slider(value = (if (puissanceGlissee >= 0) puissanceGlissee else puissance).coerceAtLeast(0).toFloat(), enabled = actif && puissance >= 0,
+                                onValueChange = { v ->
+                                    val p = v.toInt()
+                                    if (p != puissanceGlissee) client.reglerPuissance(p)
+                                    puissanceGlissee = p
+                                },
+                                onValueChangeFinished = { puissanceGlissee = -1 }, modifier = Modifier.weight(1f), valueRange = 0f..100f)
+                            Text(if (actif && puissance >= 0) "${if (puissanceGlissee >= 0) puissanceGlissee else puissance} %" else "-- %", Modifier.width(70.dp), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp, softWrap = false)
                         }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                             Text("MICRO", color = Color.LightGray)
@@ -435,32 +542,71 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                                 color = if (niveauMicro >= seuil) Color(0xFFFFB300) else Color(0xFF48D69A), trackColor = Color(0xFF2B3239))
                             Text(texteEmission, color = if (enEmission) Color(0xFFFF5252) else Color.LightGray, fontSize = 14.sp)
                         }
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Text("PONT qFT8", color = CYAN, fontWeight = FontWeight.Bold)
+                            // Voyant d'émission : allumé dès que la radio émet, quelle qu'en soit l'origine (qFT8, PTT, VOX, TUNE)
+                            Canvas(Modifier.size(22.dp)) {
+                                val rayon = size.minDimension / 2
+                                if (voyantTx) drawCircle(Color(0x66FF1744), rayon)
+                                drawCircle(if (voyantTx) Color(0xFFFF1744) else Color(0xFF3A1215), rayon * 0.68f)
+                                drawCircle(Color(0xFF5B6770), rayon * 0.68f, style = Stroke(1.5f))
+                            }
+                            Switch(checked = pontActif, onCheckedChange = { if (it) { voxActif = false; demanderPont() } else PontService.arreter(contexte) })
+                            LinearProgressIndicator(progress = { ((niveauPont + 60f) / 60f).coerceIn(0f, 1f) }, Modifier.width(160.dp).height(10.dp),
+                                color = Color(0xFF48D69A), trackColor = Color(0xFF2B3239))
+                            Text(if (pontActif) etatPont else "qFT8 fait passer la radio en émission", Modifier.weight(1f), color = if (etatPont == "qFT8 émet") Color(0xFFFF5252) else Color.LightGray, fontSize = 14.sp)
+                        }
                     }
                 }
                 Text("Pilotage via le serveur IC-7300 Scope, TCP 7300. Un seul client à la fois.", color = Color.LightGray, fontSize = 14.sp)
             }
-            Column(Modifier.width(320.dp).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("MÉMOIRES RADIO", color = CYAN, fontWeight = FontWeight.Bold, fontSize = 19.sp)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    fun aller(c: Int) { canal = c; client.lireMemoire(c) }
-                    Button(enabled = actif, onClick = { aller(if (canal == 1) 99 else canal - 1) }) { Text("◀") }
-                    Text(canal.toString().padStart(2, '0'), fontSize = 38.sp, color = Color.White, fontWeight = FontWeight.Bold)
-                    Button(enabled = actif, onClick = { aller(if (canal == 99) 1 else canal + 1) }) { Text("▶") }
-                }
-                val choisie = memoires[canal]
-                Text(choisie?.let { "${it.nom.ifBlank { "Sans nom" }}  ${texteFrequence(it.hz)}  ${it.mode}" } ?: "Canal vide ou non lu", color = Color.LightGray, fontSize = 14.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = actif && choisie != null, onClick = { choisie?.let(client::appliquer) }) { Text("APPLIQUER") }
-                    Button(enabled = actif && lecture == 0, onClick = { client.lireMemoires() }) { Text(if (lecture != 0) "LECTURE $lecture/99" else "LIRE LA RADIO") }
-                }
-                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    items(memoires.values.sortedBy { it.canal }, key = { it.canal }) { m ->
-                        TextButton(enabled = actif, onClick = { canal = m.canal; client.appliquer(m) }, modifier = Modifier.fillMaxWidth()) {
-                            Text("${m.canal.toString().padStart(2, '0')}  ${m.nom.ifBlank { "Sans nom" }}  ${texteFrequence(m.hz)}  ${m.mode}", Modifier.fillMaxWidth(), color = Color.White, fontSize = 14.sp)
+            Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("MÉMOIRES RADIO", color = CYAN, fontWeight = FontWeight.Bold, fontSize = 19.sp, softWrap = false)
+                        fun aller(c: Int) { canal = c; client.lireMemoire(c) }
+                        Button(enabled = actif, onClick = { aller(if (canal == 1) 99 else canal - 1) }) { Text("◀") }
+                        Text(canal.toString().padStart(2, '0'), fontSize = 30.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                        Button(enabled = actif, onClick = { aller(if (canal == 99) 1 else canal + 1) }) { Text("▶") }
+                        val choisie = memoires[canal]
+                        Text(choisie?.let { "${it.nom.ifBlank { "Sans nom" }}  ${texteFrequence(it.hz)}  ${it.mode}" } ?: "Canal vide ou non lu", Modifier.weight(1f), color = Color.LightGray, fontSize = 14.sp)
+                        Button(enabled = actif && choisie != null, onClick = { choisie?.let(client::appliquer) }) { Text("APPLIQUER", softWrap = false) }
+                        Button(enabled = actif && lecture == 0, onClick = { client.lireMemoires() }) { Text(if (lecture != 0) "LECTURE $lecture/99" else "LIRE LA RADIO", softWrap = false) }
+                    }
+                    // Toute la largeur : les canaux lus se rangent sur plusieurs colonnes
+                    FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        memoires.values.sortedBy { it.canal }.forEach { m ->
+                            TextButton(enabled = actif, onClick = { canal = m.canal; client.appliquer(m) }) {
+                                Text("${m.canal.toString().padStart(2, '0')}  ${m.nom.ifBlank { "Sans nom" }}  ${texteFrequence(m.hz)}  ${m.mode}", color = Color.White, fontSize = 14.sp)
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+/** Fenêtre « Informations » : version, serveur, son et rappel d'usage. */
+@Composable
+private fun InfosLite(hote: String, port: Int, adresseSon: String, etat: String, fermer: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = fermer,
+        confirmButton = { TextButton(onClick = fermer) { Text("Fermer") } },
+        title = { Text("IC-7300 Scope Lite ${BuildConfig.VERSION_NAME}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Pilote l'IC-7300 branché sur le PC de la radio, par son serveur CAT (cat_server.py) : " +
+                    "waterfall, fréquence, mode, son, émission.")
+                Text("Serveur CAT : $hote:$port")
+                Text("Relais de son : $adresseSon")
+                if (etat.isNotBlank()) Text("État : $etat")
+                Text("Le serveur n'accepte qu'un client à la fois : fermer l'appli IC-7300 Scope " +
+                    "du PC (ou se déconnecter ici) pour laisser la radio à l'autre.", fontSize = 13.sp)
+                Text("⛶ plein écran : barres masquées et écran gardé allumé ; " +
+                    "glisser depuis un bord pour revoir les barres.", fontSize = 13.sp)
+                Text("F4HXN — www.f4hxn.fr — GPL v3", color = Color.Gray, fontSize = 12.sp)
+            }
+        },
+    )
 }

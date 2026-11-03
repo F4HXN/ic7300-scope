@@ -159,3 +159,11 @@ fun pasTactile(pas: Long, bas: Long, haut: Long): Long {
     val fin = listOf(10L, 100L, 1_000L, 5_000L, 10_000L).lastOrNull { it <= (haut - bas) / 200 } ?: 10L
     return minOf(pas, fin)
 }
+
+/** Puissance : 0 à 100 % pour l'écran, 0 à 255 en BCD sur deux octets pour la radio (CI-V 14 0A). */
+fun puissanceVersCiv(pourcent: Int): IntArray {
+    val v = Math.round(pourcent.coerceIn(0, 100) * 255 / 100f)
+    return intArrayOf(v / 100, ((v / 10 % 10) shl 4) or (v % 10))
+}
+
+fun puissanceDepuisCiv(octets: List<Int>): Int = Math.round(bcdBe(octets) * 100 / 255f).coerceIn(0, 100)

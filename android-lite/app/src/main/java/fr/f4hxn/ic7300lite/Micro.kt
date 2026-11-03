@@ -44,6 +44,8 @@ class Micro {
     @Volatile var etat = ""; private set
     @Volatile var ouvert = false; private set
     @Volatile var envoyer = false
+    @Volatile var entree: android.media.AudioDeviceInfo? = null    // null : Android choisit
+    @Volatile var fabrique: ((Int) -> AudioRecord)? = null         // autre source que le micro (pont qFT8)
     @Volatile var surBloc: (Float) -> Unit = {}
     @Volatile private var session = 0
     @Volatile private var socket: Socket? = null
@@ -57,7 +59,9 @@ class Micro {
             var enregistreur: AudioRecord? = null
             try {
                 val taille = maxOf(AudioRecord.getMinBufferSize(16_000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT), 3200)
-                enregistreur = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16_000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, taille)
+                enregistreur = fabrique?.invoke(taille)
+                    ?: AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16_000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, taille)
+                        .apply { preferredDevice = entree }
                 enregistreur.startRecording()
                 val s = Socket()
                 socket = s

@@ -11,6 +11,9 @@ import kotlin.concurrent.thread
  * ouverte sans réponse de la radio est donc annoncée, pas prise pour un succès.
  */
 class CatClient(private val emissionMaxMs: Long = 180_000) {
+    @Volatile var puissance = -1; private set           // % ; -1 tant que la radio ne l'a pas dite
+    @Volatile private var puissanceReglee = 0L
+    @Volatile var atu = 0; private set                  // boîte d'accord : 0 arrêt, 1 marche, 2 accord en cours
     @Volatile var enEmission = false; private set       // demandé par l'appli
     @Volatile var radioEmet = false; private set        // relu sur la radio
     @Volatile var depuis = 0L; private set
@@ -117,6 +120,10 @@ class CatClient(private val emissionMaxMs: Long = 180_000) {
                     envoyer(0x03)
                     envoyer(0x04)
                     envoyer(0x1A, 0x06)
+                    envoyer(0x1C, 0x01)
+                    envoyer(0x14, 0x0A)
+                } else if (atu == 2) {
+                    envoyer(0x1C, 0x01)                 // accord en cours : on suit de près
                 }
                 tour++
             }
@@ -163,6 +170,11 @@ class CatClient(private val emissionMaxMs: Long = 180_000) {
         derniereReponse = System.currentTimeMillis()
         when {
             cmd == 0x1C && d.size == 2 && d[0] == 0x00 -> radioEmet = d[1] != 0
+            cmd == 0x1C && d.size == 2 && d[0] == 0x01 -> atu = d[1]
+            cmd == 0x14 && d.size == 3 && d[0] == 0x0A -> {
+                // juste après un réglage, une réponse ancienne ferait reculer le curseur
+                if (System.currentTimeMillis() - puissanceReglee > 800) puissance = puissanceDepuisCiv(d.drop(1))
+            }
             cmd == 0x1A && d.size == 4 && d[0] == 0x05 && d[1] == 0x00 && d[2] == 0x66 -> menuLu = d[3]
             cmd == 0x27 && d.size >= 4 && d[0] == 0x00 ->
                 assembleur.ajouter(bcdBe(d.subList(2, 3)).toInt(), bcdBe(d.subList(3, 4)).toInt(), d.drop(4))?.let { spectre = it }
@@ -243,6 +255,26 @@ class CatClient(private val emissionMaxMs: Long = 180_000) {
                 menuSauve = null
             }
         }
+    }
+
+    /** Lance l'accord de la boîte interne : la radio émet le temps de l'accord. */
+    fun accorder() {
+        if (enEmission) return
+        envoyer(0x1C, 0x01, 0x02)
+        atu = 2
+    }
+
+    fun basculerAtu() {
+        if (enEmission || atu == 2) return
+        val suivant = if (atu == 1) 0 else 1
+        envoyer(0x1C, 0x01, suivant)
+        atu = suivant
+    }
+
+    fun reglerPuissance(pourcent: Int) {
+        puissanceReglee = System.currentTimeMillis()
+        puissance = pourcent
+        envoyer(0x14, 0x0A, *puissanceVersCiv(pourcent))
     }
 
     fun regler(hz: Long) {
