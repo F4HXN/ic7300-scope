@@ -16,5 +16,5 @@ sed -e "s|@DIR@/ic7300_scope.py|$HERE/lancer.sh $RADIO|" \
     -e "s|^Icon=.*|Icon=$ID|" \
     "$DIR/ic7300-scope.desktop" > "$DATA/applications/$APP.desktop"
 update-desktop-database "$DATA/applications" 2>/dev/null || true
-gtk-update-icon-cache -q "$DATA/icons/hicolor" 2>/dev/null || true
+gtk-update-icon-cache -q -f -t "$DATA/icons/hicolor" 2>/dev/null || true
 echo "IC-7300 PC portable ajouté au menu des applications (radio sur $RADIO)."
