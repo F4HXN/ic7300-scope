@@ -1649,7 +1649,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self, args):
         super().__init__()
-        self.setWindowTitle("IC-7300 Scope")
+        self.setWindowTitle("IC-7300 Scope by F4HXN")
         self.audio = AudioReader(args.source)   # démarré une fois l'écran prêt
         self.audio_rate = RATE
         self.sstv_window = None
