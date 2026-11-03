@@ -27,7 +27,7 @@ import pyqtgraph as pg
 
 from platform_support import WINDOWS, config_root, cache_root, user_folder, open_folder
 if WINDOWS:
-    import windows_audio as win_audio
+    from windows import windows_audio as win_audio
 
 from cw_decoder import CwDecoder
 from cw_pioche import char_schedule, hand_timing, radio_frames
@@ -5240,7 +5240,7 @@ def main():
     # look radio : boutons métal, interrupteurs à voyant, afficheurs verts, curseurs chromés
     app.setStyleSheet(look_radio.style())
     if WINDOWS:
-        from windows_setup import configure
+        from windows.windows_setup import configure
         if not configure(args):
             return
     window = MainWindow(args)
