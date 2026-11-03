@@ -132,6 +132,12 @@ class MainActivity : ComponentActivity() {
         son.volume = reglages().getInt("volume", 70)
         pleinEcran(reglages().getBoolean("plein_ecran", false))
         setContent {
+            // téléphone (écran de moins de 500 dp) : tout réduit de 20 % pour garder la mise en page de la tablette
+            val config = androidx.compose.ui.platform.LocalConfiguration.current
+            val densite = LocalDensity.current
+            val echelle = if (minOf(config.screenWidthDp, config.screenHeightDp) < 500)
+                androidx.compose.ui.unit.Density(densite.density * 0.8f, densite.fontScale) else densite
+            CompositionLocalProvider(LocalDensity provides echelle) {
             MaterialTheme(colorScheme = darkColorScheme(primary = CYAN, background = FOND, surface = Color(0xFF1C252D))) {
                 Ecran(client, son, reglages().getString("hote", "192.168.1.37")!!, reglages().getInt("port", 7300), reglages().getString("son", SON_ADRESSE)!!, reglages().getLong("pas", 1000L), reglages().getFloat("seuil", -30f), reglages().getString("sortie", "")!!, reglages().getString("entree", "")!!,
                     { v -> reglages().edit().putInt("volume", v).apply() },
@@ -150,6 +156,7 @@ class MainActivity : ComponentActivity() {
                     { demanderPont() },
                     reglages().getBoolean("plein_ecran", false),
                     { actif -> pleinEcran(actif); reglages().edit().putBoolean("plein_ecran", actif).apply() })
+            }
             }
         }
     }
@@ -321,7 +328,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
             run {
                 // en petite fenêtre, l'état et le bouton passent à la ligne au lieu d'être coupés
                 FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("IC-7300  /  SCOPE LITE", Modifier.align(Alignment.CenterVertically), color = CYAN, fontWeight = FontWeight.Bold, fontSize = 24.sp, softWrap = false)
+                    Text("IC-7300  /  SCOPE LITE", Modifier.align(Alignment.CenterVertically), color = AMBRE, fontWeight = FontWeight.Bold, fontSize = 24.sp, softWrap = false)
                     Text(etat, Modifier.align(Alignment.CenterVertically), color = if (actif) VERT else Color.LightGray, maxLines = 2)
                     Button(onClick = { if (connecte) client.fermer() else client.connecter(hote, port) }) {
                         Text(if (connecte) "DÉCONNECTER" else "CONNECTER", softWrap = false)
@@ -337,7 +344,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("WATERFALL", color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("WATERFALL", color = AMBRE, fontWeight = FontWeight.Bold)
                             // petite fenêtre : les choix défilent au lieu de s'écraser
                             Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                                 LARGEURS.forEach { (nom, demi) ->
@@ -408,7 +415,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("VFO", color = CYAN, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                            Text("VFO", color = AMBRE, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                             listOf("A", "B").forEach { nom ->
                                 FilterChip(selected = vfo == nom, enabled = actif, onClick = { client.choisirVfo(nom) }, label = { Text(nom) })
                             }
@@ -432,15 +439,16 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                                 }
                             },
                             textAlign = TextAlign.Center, fontSize = 54.sp, fontWeight = FontWeight.Bold, color = Color(0xFF70D9FF))
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // fenêtre étroite : les pas défilent au lieu de repousser « + » hors de l'écran
+                        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             BoutonRepete("−", actif) { client.decaler(pas, -1) }
                             PAS.forEach { (nom, valeur) ->
-                                FilterChip(selected = pas == valeur, onClick = { pas = valeur; memoriserPas(valeur) }, label = { Text(nom) })
+                                FilterChip(selected = pas == valeur, onClick = { pas = valeur; memoriserPas(valeur) }, label = { Text(nom, softWrap = false) })
                             }
                             BoutonRepete("+", actif) { client.decaler(pas, 1) }
                         }
                         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("BANDE", Modifier.align(Alignment.CenterVertically), color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("BANDE", Modifier.align(Alignment.CenterVertically), color = AMBRE, fontWeight = FontWeight.Bold)
                             BANDES.forEach { b ->
                                 FilterChip(selected = actif && hz in b.debut..b.fin, enabled = actif, onClick = {
                                     client.regler(b.defaut)
@@ -458,13 +466,13 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                             }) { Text("RÉGLER") }
                         }
                         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("MODE", Modifier.align(Alignment.CenterVertically), color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("MODE", Modifier.align(Alignment.CenterVertically), color = AMBRE, fontWeight = FontWeight.Bold)
                             MODES_ECRAN.forEach { m ->
                                 FilterChip(selected = actif && mode == m, enabled = actif, onClick = { client.changerMode(m) }, label = { Text(m) })
                             }
                         }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("S-MÈTRE", color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("S-MÈTRE", color = AMBRE, fontWeight = FontWeight.Bold)
                             val niveau = if (actif) smetre else 0
                             LinearProgressIndicator(progress = { niveau / 241f }, Modifier.weight(1f).height(18.dp), color = Color(0xFF48D69A), trackColor = Color(0xFF2B3239))
                             Text(texteS(niveau), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
@@ -474,7 +482,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("SON", color = CYAN, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                            Text("SON", color = AMBRE, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                             Button(onClick = {
                                 if (ecoute) {
                                     SonService.arreter(contexte)
@@ -483,7 +491,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                                     lireAdresseSon(adresseSon).let { (h, p) -> SonService.demarrer(contexte, h, p) }
                                 }
                             }) { Text(if (ecoute) "COUPER" else "ÉCOUTER") }
-                            Text("VOLUME", color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("VOLUME", color = AMBRE, fontWeight = FontWeight.Bold)
                             Slider(value = volume.toFloat(), onValueChange = { volume = it.toInt(); son.volume = volume }, Modifier.weight(1f), valueRange = 0f..100f,
                                 onValueChangeFinished = { memoriserVolume(volume) })
                             Text("$volume %", Modifier.width(70.dp), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
@@ -498,7 +506,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("ÉMISSION", color = CYAN, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                            Text("ÉMISSION", color = AMBRE, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                             // Maintenu pour émettre : relâché, ou doigt perdu, la radio repasse en réception
                             val sourcePtt = remember { MutableInteractionSource() }
                             val pttPresse by sourcePtt.collectIsPressedAsState()
@@ -510,7 +518,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                                 }
                             }
                             Button(onClick = {}, enabled = actif && !voxActif && !pontActif, interactionSource = sourcePtt,
-                                colors = ButtonDefaults.buttonColors(containerColor = if (enEmission) Color(0xFFE5342B) else CYAN, contentColor = if (enEmission) Color.White else Color.Black),
+                                colors = if (enEmission) ButtonDefaults.buttonColors(containerColor = Color(0xFFE5342B), contentColor = Color.White) else null,
                                 modifier = Modifier.height(56.dp).width(170.dp)) {
                                 Text(if (enEmission) "ÉMISSION" else "PTT", fontWeight = FontWeight.Bold, fontSize = 20.sp, softWrap = false)
                             }
@@ -518,15 +526,18 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                             FilterChip(selected = atu != 0, enabled = actif && !enEmission && atu != 2, onClick = { client.basculerAtu() }, label = { Text("ATU", fontWeight = if (atu != 0) FontWeight.Bold else FontWeight.Normal) },
                                 colors = FilterChipDefaults.filterChipColors(selectedContainerColor = CYAN, selectedLabelColor = Color.Black,
                                     disabledSelectedContainerColor = CYAN.copy(alpha = 0.5f), disabledLabelColor = Color.Gray))
-                            Text("VOX", color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("VOX", color = AMBRE, fontWeight = FontWeight.Bold)
                             Switch(checked = voxActif, enabled = actif && !pontActif, onCheckedChange = { voxActif = it && autoriserMicro() })
-                            Text("SEUIL", color = Color.LightGray)
+                        }
+                        // seuil du VOX sur sa propre ligne : la ligne ÉMISSION ne déborde plus
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Text("SEUIL VOX", color = Color.LightGray)
                             Slider(value = seuil, onValueChange = { seuil = it }, Modifier.weight(1f), valueRange = -60f..-10f,
                                 onValueChangeFinished = { memoriserSeuil(seuil) })
                             Text("${seuil.toInt()} dB", Modifier.width(70.dp), color = Color.White, softWrap = false)
                         }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("PUISSANCE", color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("PUISSANCE", color = AMBRE, fontWeight = FontWeight.Bold)
                             Slider(value = (if (puissanceGlissee >= 0) puissanceGlissee else puissance).coerceAtLeast(0).toFloat(), enabled = actif && puissance >= 0,
                                 onValueChange = { v ->
                                     val p = v.toInt()
@@ -543,7 +554,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
                             Text(texteEmission, color = if (enEmission) Color(0xFFFF5252) else Color.LightGray, fontSize = 14.sp)
                         }
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                            Text("PONT qFT8", color = CYAN, fontWeight = FontWeight.Bold)
+                            Text("PONT qFT8", color = AMBRE, fontWeight = FontWeight.Bold)
                             // Voyant d'émission : allumé dès que la radio émet, quelle qu'en soit l'origine (qFT8, PTT, VOX, TUNE)
                             Canvas(Modifier.size(22.dp)) {
                                 val rayon = size.minDimension / 2
@@ -563,7 +574,7 @@ private fun Ecran(client: CatClient, son: Son, hote: String, port: Int, adresseS
             Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text("MÉMOIRES RADIO", color = CYAN, fontWeight = FontWeight.Bold, fontSize = 19.sp, softWrap = false)
+                        Text("MÉMOIRES RADIO", color = AMBRE, fontWeight = FontWeight.Bold, fontSize = 19.sp, softWrap = false)
                         fun aller(c: Int) { canal = c; client.lireMemoire(c) }
                         Button(enabled = actif, onClick = { aller(if (canal == 1) 99 else canal - 1) }) { Text("◀") }
                         Text(canal.toString().padStart(2, '0'), fontSize = 30.sp, color = Color.White, fontWeight = FontWeight.Bold)
