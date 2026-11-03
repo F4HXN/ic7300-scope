@@ -7,3 +7,6 @@ __pycache__/
 
 # Sous-dépôt indépendant ic7300-scope-windows
 windows/
+/android-etat/.gradle/
+/android-etat/local.properties
+/android-etat/**/build/

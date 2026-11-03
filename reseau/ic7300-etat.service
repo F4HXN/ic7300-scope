@@ -1,0 +1,11 @@
+[Unit]
+Description=État du serveur IC-7300 en JSON (port 7301, appli Android IC-7300 État)
+After=ic7300-cat-server.service
+
+[Service]
+ExecStart=/usr/bin/python3 %h/git/ic7300-scope/etat_serveur.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
