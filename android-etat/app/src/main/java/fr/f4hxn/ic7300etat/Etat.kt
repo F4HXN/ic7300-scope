@@ -71,6 +71,30 @@ fun lireEtat(adresse: String): Etat {
     }
 }
 
+/** Commande au serveur (POST /commande) : marche, arret ou deconnecter → (ok, message). */
+fun envoyerCommande(adresse: String, action: String): Pair<Boolean, String> {
+    val cx = URL("http://$adresse/commande").openConnection() as HttpURLConnection
+    cx.connectTimeout = 2500
+    cx.readTimeout = 15000          // mise en marche : jusqu'à trois essais
+    try {
+        cx.requestMethod = "POST"
+        cx.doOutput = true
+        cx.setRequestProperty("Content-Type", "application/json")
+        cx.outputStream.use { it.write(JSONObject().put("action", action).toString().toByteArray()) }
+        val code = cx.responseCode
+        if (code == 404 || code == 501) return false to "serveur à mettre à jour (etat_serveur.py)"
+        val corps = (if (code < 400) cx.inputStream else cx.errorStream)?.bufferedReader()?.readText() ?: ""
+        return try {
+            val j = JSONObject(corps)
+            j.getBoolean("ok") to j.getString("msg")
+        } catch (e: Exception) {
+            false to "réponse HTTP $code"
+        }
+    } finally {
+        cx.disconnect()
+    }
+}
+
 /** Noms connus des PC du réseau. */
 val POSTES = mapOf(
     "192.168.1.10" to "PC principal",

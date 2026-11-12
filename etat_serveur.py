@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """État du serveur IC-7300 en JSON, pour l'appli Android « IC-7300 État ».
 
-Tourne sur le PC relié à la radio, à côté de cat_server.py. Ne touche jamais
-à la radio : lit seulement le socket de surveillance de cat_server.py (comme
+Tourne sur le PC relié à la radio, à côté de cat_server.py. Hors /commande, ne
+touche jamais à la radio : lit seulement le socket de surveillance de cat_server.py (comme
 la fenêtre serveur_gui.py) et quelques indicateurs du PC.
 
     GET http://<ce PC>:7301/etat
+    POST http://<ce PC>:7301/commande   {"action": "marche" | "arret" | "deconnecter"}
+
+Les commandes passent par cat_server.py (socket de surveillance), seul à
+ouvrir le port série : marche / arrêt de la radio, déconnexion du PC distant.
 
 Fréquence, mode, S-mètre et émission ne sont connus que pendant qu'un PC
 distant pilote la radio par cat_server.py : l'appli lancée sur ce PC passe
@@ -129,6 +133,38 @@ def follow_monitor(radio):
         time.sleep(3)
 
 
+ACTIONS = ("marche", "arret", "deconnecter")
+
+
+def send_command(action, timeout=10):
+    """Transmet l'action à cat_server.py ; (ok, message)."""
+    ident = f"{os.getpid()}-{time.monotonic_ns()}"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            sock.connect(MONITOR_PATH)
+            sock.sendall(json.dumps({"id": ident, "cmd": action}).encode() + b"\n")
+            buffer, deadline = b"", time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                data = sock.recv(65536)
+                if not data:
+                    break
+                buffer += data
+                *lines, buffer = buffer.split(b"\n")
+                for line in lines:
+                    try:
+                        event = json.loads(line)
+                    except ValueError:
+                        continue
+                    if event.get("ev") == "reponse" and event.get("id") == ident:
+                        return bool(event.get("ok")), str(event.get("msg", ""))
+    except socket.timeout:
+        return False, "cat_server ne répond pas"
+    except OSError as e:
+        return False, f"cat_server injoignable ({e})"
+    return False, "cat_server à mettre à jour (pas de réponse à la commande)"
+
+
 def service_active():
     return subprocess.run(["systemctl", "--user", "is-active", "--quiet", SERVICE]
                           ).returncode == 0
@@ -194,6 +230,33 @@ def main():
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            host = ipaddress.ip_address(self.client_address[0])
+            if not any(host in net for net in allowed):
+                self.send_error(403)
+                return
+            if self.path.split("?")[0] != "/commande":
+                self.send_error(404)
+                return
+            try:
+                size = int(self.headers.get("Content-Length", ""))
+                if not 0 < size <= 200:
+                    raise ValueError
+                action = json.loads(self.rfile.read(size))["action"]
+                if action not in ACTIONS:
+                    raise ValueError
+            except (ValueError, KeyError, TypeError):
+                self.send_error(400, "action : marche, arret ou deconnecter")
+                return
+            ok, msg = send_command(action)
+            print(f"commande {action} depuis {host} : {msg}", flush=True)
+            body = json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False).encode()
+            self.send_response(200 if ok else 409)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 

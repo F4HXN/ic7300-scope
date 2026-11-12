@@ -32,6 +32,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -155,6 +156,7 @@ fun Ecran(
         }
 
         Utilisation(e)
+        Actions(e, adresse, etroit)
         Indicateurs(e, etroit)
         PanneauRadio(e, etroit)
         Commandes(e, etroit, Modifier.weight(1f))
@@ -177,8 +179,9 @@ fun Infos(adresse: String, etat: Etat?, fermer: () -> Unit) {
         title = { Text("IC-7300 État ${BuildConfig.VERSION_NAME} by F4HXN") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Affiche l'état du serveur de l'IC-7300 sans jamais toucher à la radio : " +
-                    "l'appli lit seulement le service etat_serveur.py, rafraîchi toutes les 2 s.")
+                Text("Affiche l'état du serveur de l'IC-7300 (service etat_serveur.py, rafraîchi " +
+                    "toutes les 2 s). Seuls les boutons Allumer, Éteindre et Déconnecter agissent, " +
+                    "après confirmation ; un PC déconnecté est refusé 10 min.")
                 Text("Serveur : $adresse" + (etat?.let { " (${it.hote})" } ?: ""))
                 etat?.let {
                     Text("Heure du serveur : " +
@@ -251,6 +254,71 @@ fun Utilisation(e: Etat) {
                 if (detail.isNotEmpty()) Text(detail, color = GRIS, fontSize = 13.sp)
             }
         }
+    }
+}
+
+/** Marche / arrêt de la radio et déconnexion du PC distant, avec confirmation. */
+@Composable
+fun Actions(e: Etat, adresse: String, etroit: Boolean) {
+    var demande by remember { mutableStateOf<String?>(null) }
+    var enCours by remember { mutableStateOf(false) }
+    var resultat by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    val scope = rememberCoroutineScope()
+    val client = e.client
+
+    fun lancer(action: String) {
+        enCours = true
+        resultat = null
+        scope.launch {
+            resultat = try {
+                withContext(Dispatchers.IO) { envoyerCommande(adresse, action) }
+            } catch (ex: Exception) {
+                false to (ex.message ?: ex.javaClass.simpleName)
+            }
+            enCours = false
+        }
+    }
+
+    Carte(Modifier.fillMaxWidth()) {
+        val boutons: List<@Composable (Modifier) -> Unit> = listOf(
+            { m -> Button(onClick = { demande = "marche" }, enabled = !enCours && e.serviceCat, modifier = m,
+                colors = ButtonDefaults.buttonColors(containerColor = VERT, contentColor = Color.Black)) { Text("⏻ Allumer", maxLines = 1) } },
+            { m -> Button(onClick = { demande = "arret" }, enabled = !enCours && e.serviceCat, modifier = m,
+                colors = ButtonDefaults.buttonColors(containerColor = ROUGE, contentColor = Color.Black)) { Text("⏻ Éteindre", maxLines = 1) } },
+            { m -> OutlinedButton(onClick = { demande = "deconnecter" }, enabled = !enCours && client != null, modifier = m) {
+                Text(if (etroit) "Déconnecter" else "Déconnecter le PC distant", color = if (client != null) TEXTE else GRIS, maxLines = 1) } },
+        )
+        if (etroit) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                boutons.take(2).forEach { it(Modifier.weight(1f)) }
+            }
+            boutons[2](Modifier.fillMaxWidth())
+        } else {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                boutons.forEach { it(Modifier.weight(1f)) }
+            }
+        }
+        when {
+            enCours -> Text("Commande en cours…", color = GRIS, fontSize = 13.sp)
+            resultat != null -> Text(resultat!!.second, color = if (resultat!!.first) VERT else ROUGE, fontSize = 13.sp)
+            e.appliLocale -> Text("Appli ouverte sur ${e.hote} : elle tient l'USB, marche/arrêt indisponibles d'ici",
+                color = GRIS, fontSize = 13.sp)
+        }
+    }
+
+    demande?.let { action ->
+        val question = when (action) {
+            "marche" -> "Allumer l'IC-7300 ?"
+            "arret" -> "Éteindre l'IC-7300 ?" + (client?.let { "\n${nomPoste(it)} la pilote en ce moment." } ?: "")
+            else -> "Déconnecter ${client?.let { nomPoste(it) } ?: "le PC distant"} ?\nIl sera refusé pendant 10 min (émission coupée)."
+        }
+        AlertDialog(
+            onDismissRequest = { demande = null },
+            title = { Text("Confirmation") },
+            text = { Text(question) },
+            confirmButton = { TextButton(onClick = { demande = null; lancer(action) }) { Text("Oui") } },
+            dismissButton = { TextButton(onClick = { demande = null }) { Text("Annuler") } },
+        )
     }
 }
 
