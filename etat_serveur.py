@@ -52,6 +52,8 @@ class Radio:
         self.values = {}            # frequence, mode, smetre, emission, marche…
         self.updated = None
         self.commands = deque(maxlen=MAX_COMMANDS)
+        self.power_asked = None     # 18 01 / 18 00 envoyé, en attente du OK
+        self.ng_count = 0           # NG d'affilée : la radio arrêtée ne répond que NG
 
     def event(self, event):
         with self.lock:
@@ -66,6 +68,11 @@ class Radio:
                                           "nom": event["msg"], "valeur": ""})
             elif event["ev"] == "frame":
                 self.frame(event)
+            elif event["ev"] == "alimentation":
+                self.values["marche"] = event["marche"]   # None : inconnu (port pris)
+                self.values["marche_a"] = event["t"]
+                if event.get("frequence"):
+                    self.values["frequence"] = event["frequence"]
 
     def frame(self, event):
         frame = bytes.fromhex(event["hex"])
@@ -75,6 +82,20 @@ class Radio:
         to_radio = event["dir"] == "tx"
         cmd, rest = frame[4], frame[5:-1]
         v = self.values
+        if to_radio and cmd == 0x18 and rest:
+            self.power_asked = bool(rest[0])
+        elif not to_radio:
+            if cmd == 0xFB and self.power_asked is not None:
+                v["marche"], v["marche_a"] = self.power_asked, event["t"]
+                self.power_asked = None
+            elif cmd == 0xFA:
+                self.ng_count += 1
+                if self.ng_count >= 3:
+                    v["marche"], v["marche_a"] = False, event["t"]
+            else:
+                self.ng_count = 0
+                if cmd != 0xFB:     # vraie réponse : la radio est en marche
+                    v["marche"], v["marche_a"] = True, event["t"]
         if not to_radio or cmd in (0x05, 0x06):     # réponses, ou réglages imposés
             if cmd in (0x00, 0x03, 0x05) and len(rest) == 5:
                 v["frequence"] = bcd_frequency(rest)
@@ -92,8 +113,6 @@ class Radio:
                     v["ros_brut"] = level
             elif cmd == 0x1C and len(rest) == 2 and rest[0] == 0:
                 v["emission"] = bool(rest[1])
-            elif cmd == 0x18 and rest and not to_radio:
-                v["marche"] = bool(rest[0])
         if to_radio and cmd == 0x1C and len(rest) == 2 and rest[0] == 0:
             v["emission"] = bool(rest[1])           # PTT demandé (PTT_OFF compris)
         self.updated = event["t"]

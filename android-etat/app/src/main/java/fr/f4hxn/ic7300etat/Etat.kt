@@ -25,6 +25,7 @@ data class Etat(
     val smetreBrut: Int?,
     val emission: Boolean?,
     val puissance: Int?,
+    val marche: Boolean?,              // null : inconnu (appli locale, radio jamais vue)
     val majRadio: Double?,
     val commandes: List<Commande>,
 )
@@ -60,6 +61,7 @@ fun lireEtat(adresse: String): Etat {
             smetreBrut = r.entier("smetre_brut"),
             emission = if (r.has("emission")) r.getBoolean("emission") else null,
             puissance = r.entier("puissance"),
+            marche = if (r.has("marche") && !r.isNull("marche")) r.getBoolean("marche") else null,
             majRadio = j.reel("maj_radio"),
             commandes = (0 until c.length()).map {
                 val o = c.getJSONObject(it)

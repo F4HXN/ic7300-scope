@@ -37,6 +37,8 @@ PTT_OFF = bytes([0xFE, 0xFE, 0x94, 0xE0, 0x1C, 0x00, 0x00, 0xFD])
 POWER_ON = bytes([0xFE] * 175 + [0xFE, 0xFE, 0x94, 0xE0, 0x18, 0x01, 0xFD])   # réveil + marche
 POWER_OFF = bytes([0xFE, 0xFE, 0x94, 0xE0, 0x18, 0x00, 0xFD])
 KICK_S = 600
+PROBE_S = 10                    # radio libre : marche / arrêt relu toutes les 10 s
+READ_FREQ = bytes([0xFE, 0xFE, 0x94, 0xE0, 0x03, 0xFD])
 BANS_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "ic7300-cat-refus.json")
 MONITOR_PATH = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"),
                             "ic7300-cat-monitor.sock")
@@ -211,6 +213,37 @@ def power(ser, on):
     return False
 
 
+def probe(args):
+    """Radio libre : la radio est-elle en marche ? (marche, fréquence en Hz).
+
+    Arrêtée, l'IC-7300 répond encore NG (FA) ; sans réponse, câble ou radio
+    hors tension. None si le port est pris (appli IC-7300 Scope ouverte ici)."""
+    try:
+        ser = open_radio(args)
+    except serial.SerialException:
+        return None, None
+    try:
+        ser.reset_input_buffer()
+        ser.write(READ_FREQ)
+        ser.flush()
+        buffer, deadline = b"", time.monotonic() + 0.4
+        while time.monotonic() < deadline:
+            buffer += ser.read(64)
+            for frame in buffer.split(b"\xfd"):
+                body = frame.lstrip(b"\xfe")
+                if body[:3] == b"\xe0\x94\x03" and len(body) == 8:
+                    digits = "".join(f"{b >> 4}{b & 15}" for b in reversed(body[3:8]))
+                    return True, int(digits)
+                if body[:3] == b"\xe0\x94\xfa":
+                    return False, None
+            time.sleep(0.02)
+        return False, None
+    except (serial.SerialException, OSError):
+        return None, None
+    finally:
+        ser.close()
+
+
 def command_idle(conn, command, args):
     """Commande reçue sans PC distant : le port série est ouvert le temps de l'envoyer."""
     cmd = command.get("cmd")
@@ -227,6 +260,8 @@ def command_idle(conn, command, args):
         ok = power(ser, cmd == "marche")
     finally:
         ser.close()
+    if ok:
+        monitor.emit(ev="alimentation", marche=cmd == "marche")
     action = "mise en marche" if cmd == "marche" else "arrêt"
     log(f"{action} demandée par la surveillance : {'OK' if ok else 'pas de réponse'}")
     monitor.reply(conn, command, ok, f"{action} : " + (
@@ -352,7 +387,11 @@ def main():
     load_bans()
     log(f"en écoute sur {args.listen}:{args.port}, réseaux autorisés : {args.allow}")
     while True:
-        ready, _, _ = select.select([server, monitor.sock, *monitor.watchers], [], [])
+        ready, _, _ = select.select([server, monitor.sock, *monitor.watchers], [], [], PROBE_S)
+        if not ready:
+            on, hz = probe(args)
+            monitor.emit(ev="alimentation", marche=on, frequence=hz)
+            continue
         if monitor.sock in ready:
             monitor.accept()
         for watcher, command in monitor.commands(ready):

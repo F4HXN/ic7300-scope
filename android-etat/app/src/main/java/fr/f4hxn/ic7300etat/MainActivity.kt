@@ -190,8 +190,8 @@ fun Infos(adresse: String, etat: Etat?, fermer: () -> Unit) {
                 Text("Couleurs", fontWeight = FontWeight.Bold)
                 Legende(BLEU, "radio pilotée par un PC distant (cat_server, port 7300)")
                 Legende(JAUNE, "appli ouverte sur le PC de la radio (USB direct)")
-                Legende(VERT, "radio libre, ou indicateur en marche")
-                Legende(ROUGE, "indicateur arrêté, émission en cours")
+                Legende(VERT, "radio libre ou allumée, ou indicateur en marche")
+                Legende(ROUGE, "radio éteinte, indicateur arrêté, émission en cours")
                 Text("Fréquence, mode et S-mètre ne sont connus que pendant un pilotage à distance : " +
                     "grisés, ce sont les dernières valeurs vues.", fontSize = 13.sp)
                 Text("⛶ plein écran (tablette) : barres masquées et écran gardé allumé ; " +
@@ -280,6 +280,18 @@ fun Actions(e: Etat, adresse: String, etroit: Boolean) {
     }
 
     Carte(Modifier.fillMaxWidth()) {
+        val (texteMarche, couleurMarche) = when (e.marche) {
+            true -> "Radio ALLUMÉE" to VERT
+            false -> "Radio ÉTEINTE" to ROUGE
+            null -> (if (e.appliLocale) "Radio : état inconnu (appli ouverte sur ${e.hote})"
+                     else if (!e.radioUsb) "Radio : câble USB absent" else "Radio : état inconnu") to GRIS
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Pastille(couleurMarche, 14)
+            Spacer(Modifier.width(10.dp))
+            Text(texteMarche, color = if (e.marche == null) GRIS else TEXTE,
+                fontSize = if (etroit) 18.sp else 20.sp, fontWeight = FontWeight.Bold)
+        }
         val boutons: List<@Composable (Modifier) -> Unit> = listOf(
             { m -> Button(onClick = { demande = "marche" }, enabled = !enCours && e.serviceCat, modifier = m,
                 colors = ButtonDefaults.buttonColors(containerColor = VERT, contentColor = Color.Black)) { Text("⏻ Allumer", maxLines = 1) } },
