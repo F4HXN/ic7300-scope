@@ -1,6 +1,8 @@
 package fr.f4hxn.ic7300lite
 
 import android.content.Context
+import android.content.Intent
+import android.widget.Toast
 import android.graphics.Bitmap
 import android.media.AudioManager
 import android.os.Bundle
@@ -123,6 +125,8 @@ class MainActivity : ComponentActivity() {
     private val client = Radio.client
     private val son = Radio.son
     private var aReprendre = false
+    /** Accord demandé par un lien ic7300lite://frequence (WebCluster), appliqué une fois connecté. */
+    private var enAttente: Pair<Long, String?>? = null
 
     private fun reglages() = getSharedPreferences("serveur", Context.MODE_PRIVATE)
 
@@ -131,6 +135,7 @@ class MainActivity : ComponentActivity() {
         volumeControlStream = AudioManager.STREAM_MUSIC    // les touches de volume règlent le son de la radio
         son.volume = reglages().getInt("volume", 70)
         pleinEcran(reglages().getBoolean("plein_ecran", false))
+        lireLien(intent)
         setContent {
             // téléphone (écran de moins de 500 dp) : tout réduit de 20 % pour garder la mise en page de la tablette
             val config = androidx.compose.ui.platform.LocalConfiguration.current
@@ -205,7 +210,44 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        if (aReprendre) client.connecter(reglages().getString("hote", "192.168.1.37")!!, reglages().getInt("port", 7300))
+        reprendre()
+    }
+
+    private fun reprendre() {
+        val a = enAttente
+        enAttente = null
+        if (aReprendre || (a != null && !client.connecte)) client.connecter(reglages().getString("hote", "192.168.1.37")!!, reglages().getInt("port", 7300))
+        aReprendre = false
+        if (a != null) accorder(a.first, a.second)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        lireLien(intent)
+        // déjà au premier plan : onStart ne sera pas rappelé
+        if (lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.STARTED)) reprendre()
+    }
+
+    /** ic7300lite://frequence?hz=14025000&mode=CW : mode facultatif (LSB, USB, CW, RTTY, AM, FM, USB-D…). */
+    private fun lireLien(i: Intent?) {
+        val u = i?.data ?: return
+        if (u.scheme != "ic7300lite") return
+        i.data = null   // pas rejoué si l'activité est recréée
+        val hz = u.getQueryParameter("hz")?.toLongOrNull()?.takeIf { it in HZ_MIN..HZ_MAX } ?: return
+        enAttente = hz to u.getQueryParameter("mode")?.uppercase()?.takeIf { it.removeSuffix("-D") in MODES.values }
+    }
+
+    private fun accorder(hz: Long, mode: String?) {
+        Toast.makeText(this, "Accord sur ${"%.1f".format(java.util.Locale.FRANCE, hz / 1000.0)} kHz" +
+            (mode?.let { " ($it)" } ?: ""), Toast.LENGTH_SHORT).show()
+        kotlin.concurrent.thread(isDaemon = true) {
+            val limite = System.currentTimeMillis() + 10_000
+            while (!client.connecte && System.currentTimeMillis() < limite) Thread.sleep(200)
+            if (!client.connecte) return@thread
+            Thread.sleep(500)   // laisse passer les premières interrogations
+            if (mode != null) client.changerMode(mode)
+            client.regler(hz)
+        }
     }
 }
 
