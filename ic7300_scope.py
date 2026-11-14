@@ -749,6 +749,7 @@ class CivReader(QtCore.QThread):
     voltage = QtCore.pyqtSignal(int)            # tension d'alimentation (Vd), 0 à 255
     scope = QtCore.pyqtSignal(object, int, int) # balayage, bords bas/haut (Hz)
     span = QtCore.pyqtSignal(int)               # demi-largeur du scope (Hz)
+    ref_level = QtCore.pyqtSignal(float)        # niveau de référence du scope (dB)
     powered = QtCore.pyqtSignal(bool)           # la radio répond (en marche)
     squelch_open = QtCore.pyqtSignal(bool)      # squelch ouvert (signal présent)
     memory_written = QtCore.pyqtSignal(bool, str)  # écriture d'un canal : réussite, message
@@ -771,6 +772,7 @@ class CivReader(QtCore.QThread):
         self._tuner = None
         self._filter = 0x01                 # FIL1 tant que la radio n'a rien dit
         self._pending_span = None
+        self._pending_ref = None
         self._pending_width = None
         self._pending_power = None
         self._pending_key_speed = None
@@ -855,6 +857,10 @@ class CivReader(QtCore.QThread):
 
     def set_span(self, hz):
         self._pending_span = hz
+
+    def set_ref_level(self, db):
+        """REF du scope, -20 à +20 dB par pas de 0,5 (gardé par la radio)."""
+        self._pending_ref = db
 
     def vfo_operation(self, code):
         """0x00 VFO A, 0x01 VFO B, 0xA0 A=B, 0xB0 échange A/B."""
@@ -1157,6 +1163,14 @@ class CivReader(QtCore.QThread):
             if span is not None:
                 self._command(ser, 0x27, 0x15, 0x00, *to_bcd_le(span))
                 self._transact(ser, (0x27, 0x15, 0x00), (0x27,))
+            ref, self._pending_ref = self._pending_ref, None
+            if ref is not None:
+                # BCD 4 chiffres en centièmes de dB (2000 = 20,00 dB), puis le signe
+                v = int(round(abs(ref) * 2)) * 50
+                self._command(ser, 0x27, 0x19, 0x00,
+                              (v // 1000) << 4 | v // 100 % 10,
+                              (v // 10 % 10) << 4 | v % 10, 0x01 if ref < 0 else 0x00)
+                self._transact(ser, (0x27, 0x19, 0x00), (0x27,))
             if changed:
                 n = 0
             if not self._powered:           # radio arrêtée : on guette son réveil
@@ -1174,7 +1188,7 @@ class CivReader(QtCore.QThread):
                            (0x16, 0x44), (0x14, 0x0E), (0x15, 0x15),
                            (0x16, 0x22), (0x14, 0x12), (0x16, 0x40), (0x14, 0x06),
                            (0x16, 0x41), (0x16, 0x48), (0x16, 0x02), (0x11,),
-                           (0x1A, 0x07)]
+                           (0x1A, 0x07), (0x27, 0x19, 0x00)]
             elif self._tuner == 0x02:       # accord en cours : on suit de près
                 queries = [(0x1C, 0x00), (0x1C, 0x01), (0x15, 0x11), (0x15, 0x12)]
             else:
@@ -1389,6 +1403,9 @@ class CivReader(QtCore.QThread):
                 self._scope_speed = data[2]
         elif cmd == 0x27 and len(data) == 7 and data[0] == 0x15:
             self.span.emit(bcd_le(data[2:]))
+        elif cmd == 0x27 and len(data) == 5 and data[0] == 0x19:
+            v = bcd_be(data[2:4]) / 100
+            self.ref_level.emit(-v if data[4] else v)
         return cmd
 
     def _wave_part(self, seq, total, payload):
@@ -2017,6 +2034,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.span_combo.addItem(label, hz)
         self.span_combo.setToolTip("Largeur du scope de la radio")
         self.span_combo.activated.connect(self.on_span_selected)
+        self.ref_spin = QtWidgets.QDoubleSpinBox()
+        self.ref_spin.setRange(-20, 20)
+        self.ref_spin.setSingleStep(0.5)
+        self.ref_spin.setDecimals(1)
+        self.ref_spin.setSuffix(" dB")
+        self.ref_spin.setKeyboardTracking(False)
+        self.ref_spin.setToolTip("Niveau de référence (REF) du scope de la radio : "
+                                 "à monter si la waterfall reste vide")
+        self.ref_spin.valueChanged.connect(self.on_ref_selected)
+        self.ref_label = QtWidgets.QLabel("REF")
         self.fmax_spin = QtWidgets.QSpinBox()
         self.fmax_spin.setRange(500, RATE // 2)
         self.fmax_spin.setSingleStep(500)
@@ -2034,6 +2061,8 @@ class MainWindow(QtWidgets.QMainWindow):
         controls.addWidget(self.view_combo)
         controls.addWidget(QtWidgets.QLabel("Largeur"))
         controls.addWidget(self.span_combo)
+        controls.addWidget(self.ref_label)
+        controls.addWidget(self.ref_spin)
         controls.addWidget(self.fmax_spin)
         controls.addSpacing(20)
         controls.addWidget(self.auto_check)
@@ -2655,6 +2684,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.civ.voltage.connect(self.on_voltage)
             self.civ.scope.connect(self.on_scope)
             self.civ.span.connect(self.on_span)
+            self.civ.ref_level.connect(self.on_ref_level)
             self.civ.powered.connect(self.on_powered)
             self.civ.memory_channel.connect(self.on_memory_channel)
             self.civ.squelch_open.connect(self.on_squelch)
@@ -2675,6 +2705,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.view = self.view_combo.currentData()
         rf = self.view == "rf"
         self.span_combo.setVisible(rf)
+        self.ref_label.setVisible(rf)
+        self.ref_spin.setVisible(rf)
         self.fmax_spin.setVisible(not rf)
         for item in self.tuned_lines + self.passbands:
             item.setVisible(rf)
@@ -2765,6 +2797,16 @@ class MainWindow(QtWidgets.QMainWindow):
         index = self.span_combo.findData(hz)
         if index >= 0:
             self.span_combo.setCurrentIndex(index)
+
+    def on_ref_level(self, db):
+        if not self.ref_spin.hasFocus():    # pas pendant que l'utilisateur le règle
+            self.ref_spin.blockSignals(True)
+            self.ref_spin.setValue(db)
+            self.ref_spin.blockSignals(False)
+
+    def on_ref_selected(self, db):
+        if self.civ:
+            self.civ.set_ref_level(db)
 
     def on_span_selected(self):
         if self.civ:
