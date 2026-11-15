@@ -12,10 +12,16 @@ sont des dépendances Ubuntu ; APT peut devoir les télécharger à l'installati
 WSJT-X est recommandé pour le FT8/FT4. Aucun téléchargement de modèle n'est
 nécessaire au lancement. Le décodage CW fonctionne localement.
 
+## Télécharger le paquet Debian
+
+**[Télécharger le .deb 1.2 pour Ubuntu 26.04 amd64](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**
+
+[Release et empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.2).
+
 ## Installer et lancer
 
 ```sh
-sudo apt install ./ic7300-scope-desktop_1.1-1ubuntu26.04_amd64.deb
+sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
 ic7300-scope-desktop
 ```
 
@@ -48,7 +54,12 @@ port série, l'utilisateur doit appartenir au groupe approprié (souvent dialout
 Ce paquet ne change pas les groupes, le pare-feu ou les services du système.
 Il n'installe pas automatiquement de serveur CAT ou de partage audio distant.
 
-Pour refaire la configuration, fermer la fenêtre en cours puis utiliser
+Le bouton **Paramètres…**, placé juste avant **À propos…**, rouvre la
+configuration de connexion, d’audio et de station. Les deux boutons sont alignés
+et ont les mêmes dimensions. La station est mise à jour dès l’enregistrement ;
+les changements de connexion sont appliqués après avoir relancé l’application.
+
+Il est aussi possible de fermer la fenêtre en cours puis d’utiliser
 l'action « Configurer la connexion » du menu, ou :
 
 ```sh
@@ -117,7 +128,7 @@ dans `packaging/assets.lock.json` après vérification et refaire les tests.
 python3 -B -m unittest discover -s tests -v
 ic7300-scope-desktop --version
 ic7300-scope-desktop --self-test
-python3 packaging/verify-deb.py dist/ic7300-scope-desktop_1.1-1ubuntu26.04_amd64.deb
+python3 packaging/verify-deb.py dist/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
 ```
 
 La vérification complète du paquet exige `fakeroot` et `dpkg`. Elle installe,

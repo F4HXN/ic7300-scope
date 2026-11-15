@@ -40,6 +40,7 @@ if WINDOWS:
 
 from cw_decoder import CwDecoder
 from cw_neural import make_cw_decoder
+from desktop_setup import current_connection, edit_settings, restore_connection
 from cw_pioche import char_schedule, hand_timing, radio_frames
 import carnet
 import look_radio
@@ -1679,6 +1680,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def __init__(self, args):
         super().__init__()
         self.setWindowTitle("IC-7300 Scope by F4HXN")
+        self.connection_settings = current_connection(args, DEFAULT_PORT)
         self.audio = AudioReader(args.source)   # démarré une fois l'écran prêt
         self.audio_rate = RATE
         self.sstv_window = None
@@ -1778,10 +1780,21 @@ class MainWindow(QtWidgets.QMainWindow):
             clock.addWidget(label)
         top.addSpacing(30)
         top.addLayout(clock)
+        self.settings_button = QtWidgets.QPushButton("Paramètres…")
+        self.settings_button.setToolTip("Connexion radio, audio et station")
+        self.settings_button.clicked.connect(self.on_settings)
         self.about_button = QtWidgets.QPushButton("À propos…")
         self.about_button.setToolTip("Auteur, version et licence")
         self.about_button.clicked.connect(self.on_about)
-        top.addWidget(self.about_button)
+        settings_row = QtWidgets.QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+        width = max(self.settings_button.sizeHint().width(), self.about_button.sizeHint().width())
+        height = max(self.settings_button.sizeHint().height(), self.about_button.sizeHint().height())
+        for button in (self.settings_button, self.about_button):
+            button.setFixedSize(width, height)
+            settings_row.addWidget(button, alignment=QtCore.Qt.AlignVCenter)
+        top.addLayout(settings_row)
         self.clock_timer = QtCore.QTimer(self)
         self.clock_timer.timeout.connect(self.update_clock)
         self.update_clock()
@@ -3554,6 +3567,22 @@ class MainWindow(QtWidgets.QMainWindow):
         except OSError:
             pass
 
+    def on_settings(self):
+        result = edit_settings(self.connection_settings, self.station, self)
+        if result is None:
+            return
+        connection, station = result
+        connection_changed = connection != self.connection_settings
+        self.connection_settings = connection
+        self.station = station
+        self.callsign.setText(station.get("callsign", ""))
+        self.on_callsign()
+        self.statusBar().showMessage("Paramètres enregistrés", 6000)
+        if connection_changed:
+            QtWidgets.QMessageBox.information(
+                self, "Paramètres enregistrés",
+                "Relancez l’application pour appliquer les changements de connexion radio ou audio.")
+
     def on_about(self):
         folder = os.path.dirname(os.path.abspath(__file__))
         values = {}
@@ -5279,12 +5308,12 @@ def dark_palette():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", default=DEFAULT_SOURCE,
+    parser.add_argument("--source", default=None,
                         help="source PulseAudio/PipeWire du son de la radio")
-    parser.add_argument("--port", default=DEFAULT_PORT, help="port série CI-V")
-    parser.add_argument("--sink", default=RADIO_SINK,
+    parser.add_argument("--port", default=None, help="port série CI-V")
+    parser.add_argument("--sink", default=None,
                         help="sortie PulseAudio/PipeWire vers la radio (émission)")
-    parser.add_argument("--baud", type=int, default=115200)
+    parser.add_argument("--baud", type=int, default=None)
     parser.add_argument("--fmax", type=int, default=3500,
                         help="fréquence audio maximale affichée (Hz)")
     parser.add_argument("--no-cat", action="store_true",
@@ -5294,6 +5323,7 @@ def main():
                         help="radio branchée sur un autre PC du réseau, qui fait "
                              "tourner cat_server.py et partage son son")
     args = parser.parse_args()
+    restore_connection(args, DEFAULT_PORT, DEFAULT_SOURCE, RADIO_SINK)
     if WINDOWS and (args.remote or "://" in args.port):
         parser.error("La version Windows utilise uniquement le câble USB local")
     remote_modules = []

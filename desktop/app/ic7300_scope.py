@@ -31,7 +31,7 @@ if WINDOWS:
 
 from cw_decoder import CwDecoder
 from cw_neural import make_cw_decoder
-from desktop_setup import configure
+from desktop_setup import configure, current_connection, edit_settings
 from cw_pioche import char_schedule, hand_timing, radio_frames
 import carnet
 import look_radio
@@ -1673,6 +1673,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setWindowTitle("IC-7300 Scope Desktop")
         about_action = self.menuBar().addMenu("Aide").addAction("À propos…")
         about_action.triggered.connect(self.on_about)
+        self.connection_settings = current_connection(args, DEFAULT_PORT)
         self.audio = AudioReader(args.source)   # démarré une fois l'écran prêt
         self.audio_rate = RATE
         self.sstv_window = None
@@ -1772,10 +1773,21 @@ class MainWindow(QtWidgets.QMainWindow):
             clock.addWidget(label)
         top.addSpacing(30)
         top.addLayout(clock)
+        self.settings_button = QtWidgets.QPushButton("Paramètres…")
+        self.settings_button.setToolTip("Connexion radio, audio et station")
+        self.settings_button.clicked.connect(self.on_settings)
         self.about_button = QtWidgets.QPushButton("À propos…")
         self.about_button.setToolTip("Auteur, version et licence")
         self.about_button.clicked.connect(self.on_about)
-        top.addWidget(self.about_button)
+        settings_row = QtWidgets.QHBoxLayout()
+        settings_row.setContentsMargins(0, 0, 0, 0)
+        settings_row.setSpacing(6)
+        width = max(self.settings_button.sizeHint().width(), self.about_button.sizeHint().width())
+        height = max(self.settings_button.sizeHint().height(), self.about_button.sizeHint().height())
+        for button in (self.settings_button, self.about_button):
+            button.setFixedSize(width, height)
+            settings_row.addWidget(button, alignment=QtCore.Qt.AlignVCenter)
+        top.addLayout(settings_row)
         self.clock_timer = QtCore.QTimer(self)
         self.clock_timer.timeout.connect(self.update_clock)
         self.update_clock()
@@ -3547,6 +3559,22 @@ class MainWindow(QtWidgets.QMainWindow):
             os.chmod(CALLSIGN_FILE, 0o600)  # mots de passe et clés dedans
         except OSError:
             pass
+
+    def on_settings(self):
+        result = edit_settings(self.connection_settings, self.station, self)
+        if result is None:
+            return
+        connection, station = result
+        connection_changed = connection != self.connection_settings
+        self.connection_settings = connection
+        self.station = station
+        self.callsign.setText(station.get("callsign", ""))
+        self.on_callsign()
+        self.statusBar().showMessage("Paramètres enregistrés", 6000)
+        if connection_changed:
+            QtWidgets.QMessageBox.information(
+                self, "Paramètres enregistrés",
+                "Relancez l’application pour appliquer les changements de connexion radio ou audio.")
 
     def on_about(self):
         folder = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

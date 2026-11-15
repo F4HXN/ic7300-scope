@@ -9,7 +9,8 @@ import tempfile
 from PyQt5 import QtWidgets
 from platform_support import config_root
 
-CONFIG_DIR = Path(config_root()) / 'ic7300-scope-desktop'
+APP_ID = 'ic7300-scope-desktop' if Path(__file__).resolve().parent.name == 'app' else 'ic7300-scope'
+CONFIG_DIR = Path(config_root()) / APP_ID
 CONNECTION_FILE = CONFIG_DIR / 'connection.json'
 STATION_FILE = CONFIG_DIR / 'indicatif.json'
 
@@ -143,3 +144,36 @@ def configure(args, default_port):
             return False
     for key,value in values.items():setattr(args,key,value)
     return True
+
+
+def current_connection(args, default_port):
+    saved=read_json(CONNECTION_FILE)
+    remote=getattr(args,'remote',None)
+    return {'remote':remote or None,
+            'port':saved.get('port',default_port) if remote else args.port,
+            'source':saved.get('source','') if remote else args.source,
+            'sink':saved.get('sink','') if remote else args.sink,
+            'baud':args.baud}
+
+
+def edit_settings(connection, station, parent=None):
+    dialog=SetupDialog(connection,station,parent)
+    if dialog.exec_()!=QtWidgets.QDialog.Accepted:return None
+    values=dialog.values()
+    updated=dict(station)
+    updated.update({key:field.text().strip().upper() for key,field in dialog.fields.items()})
+    try:
+        save_json(STATION_FILE,updated)
+        save_json(CONNECTION_FILE,values)
+    except OSError as exc:
+        QtWidgets.QMessageBox.critical(parent,'Configuration non enregistrée',str(exc))
+        return None
+    return values,updated
+
+
+def restore_connection(args, default_port, default_source, default_sink):
+    values=resolve(args,read_json(CONNECTION_FILE),default_port)
+    values['port']=values['port'] or default_port
+    values['source']=values['source'] or default_source
+    values['sink']=values['sink'] or default_sink
+    for key,value in values.items():setattr(args,key,value)

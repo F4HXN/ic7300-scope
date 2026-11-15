@@ -47,6 +47,13 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual(window.callsign.text(),'')
                 self.assertEqual(window.station['qth'],'')
                 self.assertEqual(window.windowTitle(),'IC-7300 Scope Desktop')
+                self.assertTrue(window.settings_button.isVisible())
+                self.assertLess(window.settings_button.x(),window.about_button.x())
+                self.assertEqual(window.settings_button.y(),window.about_button.y())
+                self.assertEqual(window.settings_button.size(),window.about_button.size())
+                with patch.object(scope,'edit_settings',return_value=None) as settings:
+                    window.settings_button.click()
+                    settings.assert_called_once()
                 with patch.object(QtWidgets.QMessageBox,'about') as about:
                     self.assertTrue(window.about_button.isVisible())
                     window.about_button.click()
@@ -56,6 +63,24 @@ class SetupTests(unittest.TestCase):
                 folder=ROOT/'build';folder.mkdir(exist_ok=True)
                 window.grab().save(str(folder/'main-window.png'))
             finally:window.close()
+
+    def test_settings_keep_accounts_and_save_connection(self):
+        with tempfile.TemporaryDirectory() as temp, \
+             patch.object(setup,'CONNECTION_FILE',Path(temp)/'connection.json'), \
+             patch.object(setup,'STATION_FILE',Path(temp)/'station.json'), \
+             patch.object(setup,'SetupDialog') as dialog:
+            dialog.return_value.exec_.return_value=QtWidgets.QDialog.Accepted
+            dialog.return_value.values.return_value=dict(remote='radio.example',port='/dev/ttyUSB0',source='',sink='',baud=9600)
+            field=unittest.mock.Mock();field.text.return_value='N0TEST'
+            dialog.return_value.fields={'callsign':field}
+            connection,station=setup.edit_settings({}, {'qrz_user':'demo','callsign':'N0CALL'})
+            self.assertEqual(station['qrz_user'],'demo')
+            self.assertEqual(station['callsign'],'N0TEST')
+            args=arguments()
+            setup.restore_connection(args,'/dev/ttyUSB9','default-rx','default-tx')
+            self.assertEqual(args.remote,'radio.example')
+            self.assertEqual(args.baud,9600)
+            self.assertEqual(args.source,'default-rx')
 
     def test_flags_override_saved_connection(self):
         saved=dict(remote='radio.example',port='/dev/ttyUSB7',source='rx',sink='tx',baud=9600)

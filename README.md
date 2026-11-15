@@ -1,3 +1,42 @@
+## Paquet Debian prêt à installer
+
+La version **Desktop 1.2** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
+
+**[⬇ Télécharger le paquet .deb 1.2](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**
+
+[Release et empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.2).
+
+Auteur : **F4HXN**. Le code de l’application est sous **[licence MIT](LICENSE)**.
+Les composants tiers conservent leurs licences et crédits.
+
+Le paquet inclut **DeepCW, son modèle et ONNX Runtime CPU**. Les bibliothèques
+système sont installées par APT. La station est vierge au premier lancement :
+choisir la connexion USB ou distante et renseigner ses propres informations.
+Le profil `~/.config/ic7300-scope-desktop/` est séparé de celui de développement.
+
+```bash
+sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
+ic7300-scope-desktop
+```
+
+**Discover 6.6.6 :** si le bouton Installer est absent, élargir ou maximiser
+la fenêtre : son libellé avec le chemin complet peut manquer de place. Sa fiche
+de fichier `.deb` local peut afficher un auteur vide et une licence inconnue,
+car elle ne lit pas les métadonnées AppStream embarquées. Le paquet inclut bien
+l’auteur F4HXN et la licence MIT. Voir les [détails du diagnostic](desktop/README.md).
+
+Le bouton **Paramètres…** rouvre la configuration ; il est aligné juste avant
+**À propos…**. Relancer l’application après un changement de connexion.
+
+Les [sources de distribution et instructions de mise à jour](desktop/README.md)
+sont dans `desktop/`. La construction se lance avec
+`./desktop/packaging/build-deb.sh` après préparation des artefacts.
+Les tests CW, le démarrage de l'interface, l'installation, la réinstallation et
+la suppression dans une racine temporaire ont été vérifiés. La réception réelle
+sur radio reste à valider pour cette version empaquetée.
+
+---
+
 <div align="center">
 
 # 📻 IC-7300 Scope
@@ -14,40 +53,6 @@ dans une seule fenêtre.
 ![Indicatif](https://img.shields.io/badge/Indicatif-F4HXN-c62828)
 
 </div>
-
----
-
-## Paquet Debian prêt à installer
-
-La version **Desktop 1.1** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
-
-**[Télécharger le paquet .deb et son empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.1)**
-
-Auteur : **F4HXN**. Le code de l’application est sous **[licence MIT](LICENSE)**.
-Les composants tiers conservent leurs licences et crédits.
-
-Le paquet inclut **DeepCW, son modèle et ONNX Runtime CPU**. Les bibliothèques
-système sont installées par APT. La station est vierge au premier lancement :
-choisir la connexion USB ou distante et renseigner ses propres informations.
-Le profil `~/.config/ic7300-scope-desktop/` est séparé de celui de développement.
-
-```bash
-sudo apt install ./ic7300-scope-desktop_1.1-1ubuntu26.04_amd64.deb
-ic7300-scope-desktop
-```
-
-**Discover 6.6.6 :** si le bouton Installer est absent, élargir ou maximiser
-la fenêtre : son libellé avec le chemin complet peut manquer de place. Sa fiche
-de fichier `.deb` local peut afficher un auteur vide et une licence inconnue,
-car elle ne lit pas les métadonnées AppStream embarquées. Le paquet inclut bien
-l’auteur F4HXN et la licence MIT. Voir les [détails du diagnostic](desktop/README.md).
-
-Les [sources de distribution et instructions de mise à jour](desktop/README.md)
-sont dans `desktop/`. La construction se lance avec
-`./desktop/packaging/build-deb.sh` après préparation des artefacts.
-Les tests CW, le démarrage de l'interface, l'installation, la réinstallation et
-la suppression dans une racine temporaire ont été vérifiés. La réception réelle
-sur radio reste à valider pour cette version empaquetée.
 
 ---
 
