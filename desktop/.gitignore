@@ -1,0 +1,7 @@
+/build/
+/dist/
+/assets/
+/.build-venv/
+__pycache__/
+*.pyc
+*.deb

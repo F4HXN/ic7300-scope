@@ -17,6 +17,31 @@ dans une seule fenêtre.
 
 ---
 
+## Paquet Debian prêt à installer
+
+La version **Desktop 1.0.0** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
+
+**[Télécharger le paquet .deb et son empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.0.0)**
+
+Le paquet inclut **DeepCW, son modèle et ONNX Runtime CPU**. Les bibliothèques
+système sont installées par APT. La station est vierge au premier lancement :
+choisir la connexion USB ou distante et renseigner ses propres informations.
+Le profil `~/.config/ic7300-scope-desktop/` est séparé de celui de développement.
+
+```bash
+sudo apt install ./ic7300-scope-desktop_1.0.0-1ubuntu26.04_amd64.deb
+ic7300-scope-desktop
+```
+
+Les [sources de distribution et instructions de mise à jour](desktop/README.md)
+sont dans `desktop/`. La construction se lance avec
+`./desktop/packaging/build-deb.sh` après préparation des artefacts.
+Les tests CW, le démarrage de l'interface, l'installation, la réinstallation et
+la suppression dans une racine temporaire ont été vérifiés. La réception réelle
+sur radio reste à valider pour cette version empaquetée.
+
+---
+
 **Windows, connexion USB locale :** une version expérimentale est disponible
 avec sélection du port COM et audio Windows. Voir [le guide Windows](windows/README.md)
 pour l'installation et les essais matériels restant à effectuer.

@@ -1,0 +1,18 @@
+{
+  "architecture": "amd64",
+  "ubuntu": "26.04",
+  "python_minor": "3.14",
+  "deepcw_revision": "79104fbe1ea0abd09eb27c6ebf9c6bab364d0d7f",
+  "packages": [
+    "onnxruntime==1.32.0",
+    "flatbuffers==25.12.19",
+    "protobuf==7.36.2"
+  ],
+  "sha256": {
+    "wheels/protobuf-7.36.2-cp310-abi3-manylinux2014_x86_64.whl": "89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2",
+    "wheels/onnxruntime-1.32.0-cp314-cp314-manylinux_2_28_x86_64.whl": "48b878f9551d465aa79ee94ecaf49a1f6b5d27f2975efa775ded374db14d0af1",
+    "wheels/flatbuffers-25.12.19-py2.py3-none-any.whl": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4",
+    "models/deepcw/model.onnx.json": "4e7729dcc64c2a208deb28beac4ded55632d11cb70337a9c0ddce523e73bdd9c",
+    "models/deepcw/model.onnx": "cd5ee38106348ad86a8f2d40ef1ce7dccea0d7f7fbfd0f2dee0fd1a8a28773ae"
+  }
+}

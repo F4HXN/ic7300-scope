@@ -1,0 +1,28 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: IC-7300 Scope Desktop
+
+Files: app/* packaging/* distribution/*
+Copyright: Contributeurs IC-7300 Scope et IC-7300 Scope Desktop
+License: reserved
+ Le code propre au projet conserve ses droits existants.
+ Aucune nouvelle licence générale n'est attribuée par cet emballage.
+
+Files: app/vendor/deepcw/* app/models/deepcw/*
+Copyright: 2026 e04
+License: MIT
+ Voir app/vendor/deepcw/LICENSE dans le répertoire de l'application.
+
+Files: runtime/onnxruntime/*
+Copyright: Microsoft Corporation et contributeurs
+License: MIT
+ Voir runtime/onnxruntime/LICENSE et runtime/onnxruntime/ThirdPartyNotices.txt.
+
+Files: runtime/flatbuffers/*
+Copyright: Google LLC et contributeurs
+License: Apache-2.0
+ Voir le fichier LICENSE.txt de la distribution flatbuffers embarquée.
+
+Files: runtime/google/protobuf/*
+Copyright: Google LLC et contributeurs
+License: BSD-3-Clause
+ Voir le fichier LICENSE de la distribution protobuf embarquée.

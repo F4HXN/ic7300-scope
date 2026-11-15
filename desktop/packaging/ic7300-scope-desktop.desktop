@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Name=IC-7300 Scope Desktop
+GenericName=Interface radio IC-7300
+Comment=Spectre, décodage CW et modes numériques pour l’IC-7300
+Exec=ic7300-scope-desktop
+Icon=ic7300-scope-desktop
+Terminal=false
+Categories=Network;HamRadio;
+Keywords=radio;icom;7300;waterfall;cw;ft8;
+StartupWMClass=IC-7300 Scope Desktop
+Actions=Configure;
+
+[Desktop Action Configure]
+Name=Configurer la connexion
+Exec=ic7300-scope-desktop --configure

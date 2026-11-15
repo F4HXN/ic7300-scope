@@ -1,0 +1,25 @@
+{
+  "source_commit": "eb72c4571c6f12f4d6029bcda795237be3fb540a",
+  "source_sha256": {
+    "ic7300_scope.py": "eae0a6997ac28b064d2b5599f3a89e72ef14fcd807feb282e564f87aa5913f3c",
+    "platform_support.py": "ef3315fcb1b7f8b804e50b5df87c252eda8fd34176c81d99accc9c31453549f2",
+    "cw_decoder.py": "b748699d9fd9da27ca45131ca0f10c1f989e5e2e2c457cee9297792dfd64b8db",
+    "cw_neural.py": "74b94922aaa216c8416426d0b244d3741395175f5c8c64eb0d6c5f3855834542",
+    "cw_pioche.py": "8bf1f0c825dc67521f992d0a21b39ca22360f2edf19b785975e24a90f1eaeb14",
+    "rtty_decoder.py": "4e200e78935360495b7a285a801aa51f358e8258533ec043986bff6525ecc562",
+    "ft8_decoder.py": "a089731dedc13e14254f6db71258f870a1707d64ffda62ac4f0d7926f94079a6",
+    "ft8_encoder.py": "9882f915dcb05b1d7f73f90d8f1cb12d7f997ca349b15abd87341300e3cf62d9",
+    "carnet.py": "039e654e4b7cff51e3fd633694153c1ea0882b83950513f0a33a68b7dd0f3598",
+    "qrz.py": "2d07f50d6df4281a1749d8528a099c1b6a3284f6aa4bb8668bc092c906c159e8",
+    "cat_server.py": "9238fcb3c188c92a90a7e0df0c41784e75fb020b43e43ae012d21c2008cee694",
+    "memory_window.py": "dc58d0b3344fa7b4a865a187f803d56ef4df95116bd95b1761973bd136897e71",
+    "sstv_window.py": "a83d2ded2b3d93ddc29fafe0edd894fd8639372d05ee6dd59cc6eeb9a91b9c91",
+    "sstv.py": "4e6d7b566f19ca615384e9c12a60b7e1af73080812ce941b9f6d06ad67d67817",
+    "wefax.py": "87fc9f19eb15fc693d158e634be17a6074b93ba854a992554a40b4fddd51d93a",
+    "look_radio.py": "a8368b9d9ec46b137db51f3e1ab089277ce2f73fde7b5fb6375d96054c5411a1",
+    "icon.svg": "41e3465c1222d92ab30e43847970d6fbf4850f4cf78ca12af5470300cad6e664",
+    "vendor/deepcw/engine.py": "89c1658eca4842b1500cfc9c66232f72101cd697c8463c35fd0e842dd5dbc6f9",
+    "vendor/deepcw/LICENSE": "a642403fa38730e625c32045d42a78a0addd218417fff61502ba302717aec410",
+    "vendor/deepcw/README.md": "a7ca1acfa89fbaccf660c2e6cf53e28c241d43f05c85b5fcebe83c4ce5186d5e"
+  }
+}

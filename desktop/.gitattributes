@@ -1,0 +1,2 @@
+# Les lignes de contexte vides des patchs portent un espace significatif.
+distribution/*.patch -whitespace

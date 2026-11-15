@@ -1,0 +1,166 @@
+--- a/ic7300_scope.py
++++ b/ic7300_scope.py
+@@ -20,15 +20,6 @@
+ import wave
+ import xml.etree.ElementTree as ET
+ 
+-# L'installation CW locale reste isolée et s'applique aussi aux raccourcis.
+-if (__name__ == "__main__" and os.name != "nt"
+-        and os.environ.get("IC7300_CW_ENGINE", "").lower() != "classic"
+-        and sys.prefix == sys.base_prefix):
+-    cw_python = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+-                             ".venv-cw", "bin", "python")
+-    if os.path.isfile(cw_python):
+-        os.execv(cw_python, [cw_python, os.path.abspath(__file__), *sys.argv[1:]])
+-
+ import numpy as np
+ import serial
+ from PyQt5 import QtCore, QtGui, QtWidgets
+@@ -40,6 +31,7 @@
+ 
+ from cw_decoder import CwDecoder
+ from cw_neural import make_cw_decoder
++from desktop_setup import configure
+ from cw_pioche import char_schedule, hand_timing, radio_frames
+ import carnet
+ import look_radio
+@@ -70,7 +62,7 @@
+     return user_folder("MUSIC")
+ 
+ 
+-RECORD_DIR = os.path.join(music_dir(), "IC-7300")
++RECORD_DIR = os.path.join(music_dir(), "IC-7300 Scope Desktop")
+ # appel CQ en phonie (voix de synthèse, bouton APPEL CQ) : fichier dans le dossier
+ # des enregistrements, à refaire avec sa propre voix ou son indicatif si besoin
+ VOICE_CQ_FILE = os.path.join(RECORD_DIR, "appel-cq.wav")
+@@ -82,7 +74,7 @@
+ # l'émission) ; le fichier n'existe que tant qu'il reste quelque chose à
+ # remettre, y compris si l'appli a planté
+ STATE_FILE = os.path.join(config_root(),
+-                          "ic7300-scope", "etat-origine.json")
++                          "ic7300-scope-desktop", "etat-origine.json")
+ # dernière fréquence et dernier mode utilisés sur chaque bande
+ BANDS_FILE = os.path.join(os.path.dirname(STATE_FILE), "bandes.json")
+ # indicatif et station de l'opérateur, pour les messages CW tout faits
+@@ -90,7 +82,7 @@
+ LOG_FILE = os.path.join(os.path.dirname(STATE_FILE), "carnet.adi")
+ # message RTTY mis en audio avant d'être émis
+ RTTY_TX_FILE = os.path.join(cache_root(),
+-                            "ic7300-scope", "rtty-emis.wav")
++                            "ic7300-scope-desktop", "rtty-emis.wav")
+ # message FT8 / FT4 mis en audio avant d'être émis
+ FT_TX_FILE = os.path.join(os.path.dirname(RTTY_TX_FILE), "ft-emis.wav")
+ # messages pré-enregistrés de chaque mode : fichier, d'origine plus bas
+@@ -5258,12 +5250,12 @@
+ 
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+-    parser.add_argument("--source", default=DEFAULT_SOURCE,
++    parser.add_argument("--source", default=None,
+                         help="source PulseAudio/PipeWire du son de la radio")
+-    parser.add_argument("--port", default=DEFAULT_PORT, help="port série CI-V")
+-    parser.add_argument("--sink", default=RADIO_SINK,
++    parser.add_argument("--port", default=None, help="port série CI-V")
++    parser.add_argument("--sink", default=None,
+                         help="sortie PulseAudio/PipeWire vers la radio (émission)")
+-    parser.add_argument("--baud", type=int, default=115200)
++    parser.add_argument("--baud", type=int, default=None)
+     parser.add_argument("--fmax", type=int, default=3500,
+                         help="fréquence audio maximale affichée (Hz)")
+     parser.add_argument("--no-cat", action="store_true",
+@@ -5272,9 +5264,21 @@
+     parser.add_argument("--remote", metavar="HÔTE",
+                         help="radio branchée sur un autre PC du réseau, qui fait "
+                              "tourner cat_server.py et partage son son")
++    parser.add_argument("--configure", action="store_true",
++                        help="modifier la connexion et la station avant le démarrage")
+     args = parser.parse_args()
+-    if WINDOWS and (args.remote or "://" in args.port):
+-        parser.error("La version Windows utilise uniquement le câble USB local")
++    pg.setConfigOptions(imageAxisOrder="row-major", antialias=True,
++                        background="#101418")
++    app = QtWidgets.QApplication(sys.argv)
++    app.setApplicationName("IC-7300 Scope Desktop")
++    app.setDesktopFileName("ic7300-scope-desktop")      # lien avec le menu des applications
++    app.setWindowIcon(QtGui.QIcon(ICON))
++    app.setStyle("Fusion")
++    app.setPalette(dark_palette())
++    # look radio : boutons métal, interrupteurs à voyant, afficheurs verts, curseurs chromés
++    app.setStyleSheet(look_radio.style())
++    if not configure(args, DEFAULT_PORT):
++        return
+     remote_modules = []
+     if args.remote:
+         try:
+@@ -5287,20 +5291,6 @@
+         # radio en USB sur ce PC : l'écoute n'existe que tant que l'appli tourne
+         remote_modules = local_listen(args.source)
+ 
+-    pg.setConfigOptions(imageAxisOrder="row-major", antialias=True,
+-                        background="#101418")
+-    app = QtWidgets.QApplication(sys.argv)
+-    app.setApplicationName("IC-7300 Scope")
+-    app.setDesktopFileName("ic7300-scope")      # lien avec le menu des applications
+-    app.setWindowIcon(QtGui.QIcon(ICON))
+-    app.setStyle("Fusion")
+-    app.setPalette(dark_palette())
+-    # look radio : boutons métal, interrupteurs à voyant, afficheurs verts, curseurs chromés
+-    app.setStyleSheet(look_radio.style())
+-    if WINDOWS:
+-        from windows.windows_setup import configure
+-        if not configure(args):
+-            return
+     window = MainWindow(args)
+     window.show()
+     # kill, Ctrl+C ou fin de session : fermer la fenêtre pour remettre la
+--- a/cw_neural.py
++++ b/cw_neural.py
+@@ -22,6 +22,7 @@
+         sys.modules[spec.name] = module
+         try:
+             spec.loader.exec_module(module)
++            module.ort.disable_telemetry_events()
+         except Exception:
+             sys.modules.pop(spec.name, None)
+             raise
+--- a/memory_window.py
++++ b/memory_window.py
+@@ -12,7 +12,7 @@
+ from platform_support import config_root
+ 
+ MEMORY_FILE = os.path.join(config_root(),
+-                           "ic7300-scope", "memoires.json")
++                           "ic7300-scope-desktop", "memoires.json")
+ 
+ # mémoires de départ : nom, fréquence (Hz), mode, note
+ DEFAULT_MEMORIES = [
+--- a/sstv_window.py
++++ b/sstv_window.py
+@@ -17,7 +17,7 @@
+     return user_folder("PICTURES")
+ 
+ 
+-SSTV_DIR = os.path.join(pictures_dir(), "SSTV")
++SSTV_DIR = os.path.join(pictures_dir(), "IC-7300 Scope Desktop", "SSTV")
+ 
+ # stations de fax météo (120 lignes/min, IOC 576) : nom, fréquence annoncée (kHz)
+ FAX_STATIONS = [
+--- a/look_radio.py
++++ b/look_radio.py
+@@ -7,6 +7,7 @@
+ ~/.cache/ic7300-scope : la feuille de style Qt ne sait pas les dessiner seule.
+ """
+ import os
++from platform_support import cache_root
+ 
+ from PyQt5 import QtCore, QtGui
+ 
+@@ -123,7 +124,7 @@
+ 
+ def style():
+     """Feuille de style, avec ses images (créées si besoin)."""
+-    folder = os.path.join(os.path.expanduser("~/.cache"), "ic7300-scope")
++    folder = os.path.join(cache_root(), "ic7300-scope-desktop")
+     os.makedirs(folder, exist_ok=True)
+     images = {"up": _arrow(((0, 7), (5, 0), (10, 7))), "down": _arrow(((0, 0), (10, 0), (5, 7))),
+               "on": _switch(True), "off": _switch(False), "off_disabled": _switch(False, False)}
