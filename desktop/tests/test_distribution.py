@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import xml.etree.ElementTree as ET
 import unittest
 from unittest.mock import patch
 
@@ -46,6 +47,12 @@ class SetupTests(unittest.TestCase):
                 self.assertEqual(window.callsign.text(),'')
                 self.assertEqual(window.station['qth'],'')
                 self.assertEqual(window.windowTitle(),'IC-7300 Scope Desktop')
+                with patch.object(QtWidgets.QMessageBox,'about') as about:
+                    self.assertTrue(window.about_button.isVisible())
+                    window.about_button.click()
+                    message=about.call_args.args[2]
+                    self.assertIn('Auteur : F4HXN',message)
+                    self.assertIn('Licence : MIT',message)
                 folder=ROOT/'build';folder.mkdir(exist_ok=True)
                 window.grab().save(str(folder/'main-window.png'))
             finally:window.close()
@@ -137,6 +144,18 @@ class AuditTests(unittest.TestCase):
             (root/'carnet.adi').write_text('test')
             (root/'profile.json').write_text('{}')
             self.assertEqual(len(audit.audit(root)),3)
+
+    def test_appstream_author_license_and_launcher(self):
+        text=(ROOT/'packaging/io.github.f4hxn.IC7300Scope.metainfo.xml.in').read_text()
+        text=text.replace('@PROJECT_LICENSE@',(ROOT/'PROJECT_LICENSE').read_text().strip()).replace('@VERSION@',(ROOT/'VERSION').read_text().strip())
+        metadata=ET.fromstring(text)
+        self.assertEqual(metadata.findtext('developer/name'),'F4HXN')
+        self.assertEqual(metadata.findtext('project_license'),'MIT')
+        self.assertEqual(metadata.findtext('launchable'),'ic7300-scope-desktop.desktop')
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/'io.github.f4hxn.IC7300Scope.metainfo.xml'
+            path.write_text(text)
+            subprocess.run(['appstreamcli','validate','--no-net',str(path)],check=True,capture_output=True)
 
     def test_desktop_entry_is_valid(self):
         subprocess.run(['desktop-file-validate',str(ROOT/'packaging/ic7300-scope-desktop.desktop')],check=True)

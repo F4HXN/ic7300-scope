@@ -1778,6 +1778,10 @@ class MainWindow(QtWidgets.QMainWindow):
             clock.addWidget(label)
         top.addSpacing(30)
         top.addLayout(clock)
+        self.about_button = QtWidgets.QPushButton("À propos…")
+        self.about_button.setToolTip("Auteur, version et licence")
+        self.about_button.clicked.connect(self.on_about)
+        top.addWidget(self.about_button)
         self.clock_timer = QtCore.QTimer(self)
         self.clock_timer.timeout.connect(self.update_clock)
         self.update_clock()
@@ -3549,6 +3553,23 @@ class MainWindow(QtWidgets.QMainWindow):
             os.chmod(CALLSIGN_FILE, 0o600)  # mots de passe et clés dedans
         except OSError:
             pass
+
+    def on_about(self):
+        folder = os.path.dirname(os.path.abspath(__file__))
+        values = {}
+        for name in ("VERSION", "AUTHORS", "PROJECT_LICENSE"):
+            try:
+                with open(os.path.join(folder, name), encoding="utf-8") as stream:
+                    values[name] = stream.readline().strip()
+            except OSError:
+                values[name] = "Non renseigné"
+        QtWidgets.QMessageBox.about(
+            self, "À propos d’IC-7300 Scope Desktop",
+            "IC-7300 Scope Desktop " + values["VERSION"] + "\n\n"
+            "Auteur : " + values["AUTHORS"] + "\n"
+            "Licence : " + values["PROJECT_LICENSE"] + "\n\n"
+            "DeepCW et bibliothèques tierces : licences et crédits dans la documentation du paquet.")
+
 
     def on_station(self):
         """Prénom, QTH, locator et matériel repris dans les messages CW."""

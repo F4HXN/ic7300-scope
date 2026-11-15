@@ -1,5 +1,8 @@
 # IC-7300 Scope Desktop
 
+Auteur : **F4HXN**. Code de l’application sous **[licence MIT](LICENSE)**.
+Les composants tiers conservent leurs licences et leurs crédits.
+
 Version de distribution Linux pour l'Icom IC-7300 : spectre RF/audio, waterfall,
 CW DeepCW, RTTY, FT8/FT4 via WSJT-X, SSTV et carnet de trafic.
 
@@ -12,11 +15,18 @@ nécessaire au lancement. Le décodage CW fonctionne localement.
 ## Installer et lancer
 
 ```sh
-sudo apt install ./ic7300-scope-desktop_1.0.0-1ubuntu26.04_amd64.deb
+sudo apt install ./ic7300-scope-desktop_1.0.1-1ubuntu26.04_amd64.deb
 ic7300-scope-desktop
 ```
 
-Une entrée « IC-7300 Scope Desktop » est ajoutée au menu. Au premier lancement,
+Une entrée « IC-7300 Scope Desktop » est ajoutée au menu. Le paquet contient
+les métadonnées AppStream (auteur, licence, description et lanceur) utilisées
+par les logithèques. L’auteur et la licence sont aussi dans **Aide → À propos…**.
+La validation PackageKit en simulation est distincte du rendu de Discover :
+une absence de bouton dans sa page de fichier local ne prouve pas un rejet du
+paquet. La commande APT ci-dessus permet l’installation directe dans ce cas.
+
+ Au premier lancement,
 choisir le port CI-V et les périphériques USB Audio CODEC, ou le nom/l'adresse
 du PC distant déjà configuré pour partager la radio. La station est vierge ;
 l'indicatif, le prénom, le QTH et le locator sont à renseigner. Annuler ferme
@@ -96,7 +106,7 @@ dans `packaging/assets.lock.json` après vérification et refaire les tests.
 python3 -B -m unittest discover -s tests -v
 ic7300-scope-desktop --version
 ic7300-scope-desktop --self-test
-python3 packaging/verify-deb.py dist/ic7300-scope-desktop_1.0.0-1ubuntu26.04_amd64.deb
+python3 packaging/verify-deb.py dist/ic7300-scope-desktop_1.0.1-1ubuntu26.04_amd64.deb
 ```
 
 La vérification complète du paquet exige `fakeroot` et `dpkg`. Elle installe,

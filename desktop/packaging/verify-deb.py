@@ -32,6 +32,11 @@ with tempfile.TemporaryDirectory(prefix='scope-package-test-') as temp:
         checksum,relative=line.split('  ',1)
         if hashlib.md5((extracted/relative).read_bytes()).hexdigest()!=checksum:
             sys.exit('Contenu modifié : '+relative)
+    metadata=extracted/'usr/share/metainfo/io.github.f4hxn.IC7300Scope.metainfo.xml'
+    print(run(['appstreamcli','validate','--no-net',metadata]))
+    for name in ('AUTHORS','LICENSE'):
+        if not (extracted/'usr/share/doc/ic7300-scope-desktop'/name).is_file():
+            sys.exit('Document auteur/licence manquant : '+name)
     profile=root/'profile';profile.mkdir()
     env={**os.environ,'HOME':str(profile),'XDG_CONFIG_HOME':str(profile/'config'),
          'XDG_CACHE_HOME':str(profile/'cache'),'QT_QPA_PLATFORM':'offscreen',

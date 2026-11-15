@@ -19,9 +19,12 @@ dans une seule fenêtre.
 
 ## Paquet Debian prêt à installer
 
-La version **Desktop 1.0.0** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
+La version **Desktop 1.0.1** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
 
-**[Télécharger le paquet .deb et son empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.0.0)**
+**[Télécharger le paquet .deb et son empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.0.1)**
+
+Auteur : **F4HXN**. Le code de l’application est sous **[licence MIT](LICENSE)**.
+Les composants tiers conservent leurs licences et crédits.
 
 Le paquet inclut **DeepCW, son modèle et ONNX Runtime CPU**. Les bibliothèques
 système sont installées par APT. La station est vierge au premier lancement :
@@ -29,7 +32,7 @@ choisir la connexion USB ou distante et renseigner ses propres informations.
 Le profil `~/.config/ic7300-scope-desktop/` est séparé de celui de développement.
 
 ```bash
-sudo apt install ./ic7300-scope-desktop_1.0.0-1ubuntu26.04_amd64.deb
+sudo apt install ./ic7300-scope-desktop_1.0.1-1ubuntu26.04_amd64.deb
 ic7300-scope-desktop
 ```
 

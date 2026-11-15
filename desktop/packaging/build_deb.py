@@ -65,6 +65,14 @@ def build():
                     destination.parent.mkdir(parents=True,exist_ok=True)
                     destination.write_bytes(wheel.read(item))
         copy_file(ROOT/'VERSION',lib/'VERSION')
+        copy_file(ROOT/'AUTHORS',lib/'AUTHORS')
+        copy_file(ROOT/'PROJECT_LICENSE',lib/'PROJECT_LICENSE')
+        metainfo=(ROOT/'packaging/io.github.f4hxn.IC7300Scope.metainfo.xml.in').read_text()
+        metainfo=metainfo.replace('@PROJECT_LICENSE@',(ROOT/'PROJECT_LICENSE').read_text().strip()).replace('@VERSION@',version)
+        metadata=stage/'usr/share/metainfo/io.github.f4hxn.IC7300Scope.metainfo.xml'
+        metadata.parent.mkdir(parents=True,exist_ok=True)
+        metadata.write_text(metainfo)
+        subprocess.run(['appstreamcli','validate','--no-net',str(metadata)],check=True)
         launcher=stage/'usr/bin/ic7300-scope-desktop'
         copy_file(ROOT/'packaging/launcher.py',launcher)
         copy_file(ROOT/'packaging/ic7300-scope-desktop.desktop',stage/'usr/share/applications/ic7300-scope-desktop.desktop')
@@ -72,6 +80,10 @@ def build():
         doc=stage/'usr/share/doc/ic7300-scope-desktop'
         copy_file(ROOT/'README.md',doc/'README.md')
         copy_file(ROOT/'packaging/copyright',doc/'copyright')
+        copy_file(ROOT/'AUTHORS',doc/'AUTHORS')
+        copy_file(ROOT/'packaging/licenses/FSFAP',doc/'FSFAP')
+        if (ROOT/'LICENSE').is_file():
+            copy_file(ROOT/'LICENSE',doc/'LICENSE')
         copy_file(ROOT/'packaging/licenses/flatbuffers.LICENSE',
                   runtime/'flatbuffers-25.12.19.dist-info/LICENSE.txt')
         # Audit du contenu embarqué, y compris les sources des bibliothèques tierces.
@@ -85,7 +97,8 @@ Version: {version}-1ubuntu{lock['ubuntu']}
 Section: hamradio
 Priority: optional
 Architecture: {lock['architecture']}
-Maintainer: Scope Desktop contributors <maintainers@example.invalid>
+Maintainer: F4HXN <F4HXN@users.noreply.github.com>
+Homepage: https://github.com/F4HXN/ic7300-scope
 Installed-Size: {installed_size}
 Depends: python3 (>= {lock['python_minor']}), python3 (<< {upper_minor}), python3-pyqt5, python3-pyqtgraph, python3-numpy (>= 1.24), python3-scipy, python3-serial, python3-packaging, pulseaudio-utils, xdg-user-dirs, libc6 (>= 2.28), libstdc++6, libgcc-s1
 Recommends: wsjtx

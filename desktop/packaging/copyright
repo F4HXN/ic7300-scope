@@ -2,10 +2,10 @@ Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: IC-7300 Scope Desktop
 
 Files: app/* packaging/* distribution/*
-Copyright: Contributeurs IC-7300 Scope et IC-7300 Scope Desktop
-License: reserved
- Le code propre au projet conserve ses droits existants.
- Aucune nouvelle licence générale n'est attribuée par cet emballage.
+Copyright: 2026 F4HXN et contributeurs
+License: MIT
+ Voir /usr/share/doc/ic7300-scope-desktop/LICENSE pour le texte intégral.
+ Les composants tiers conservent les licences indiquées ci-dessous.
 
 Files: app/vendor/deepcw/* app/models/deepcw/*
 Copyright: 2026 e04
@@ -26,3 +26,8 @@ Files: runtime/google/protobuf/*
 Copyright: Google LLC et contributeurs
 License: BSD-3-Clause
  Voir le fichier LICENSE de la distribution protobuf embarquée.
+
+Files: usr/share/metainfo/* packaging/*.metainfo.xml.in
+Copyright: 2026 F4HXN
+License: FSFAP
+ Voir /usr/share/doc/ic7300-scope-desktop/FSFAP.

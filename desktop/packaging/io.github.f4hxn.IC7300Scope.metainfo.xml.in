@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: 2026 F4HXN -->
+<!-- SPDX-License-Identifier: FSFAP -->
+<component type="desktop-application">
+  <id>io.github.f4hxn.IC7300Scope</id>
+  <metadata_license>FSFAP</metadata_license>
+  <project_license>@PROJECT_LICENSE@</project_license>
+  <name>IC-7300 Scope Desktop</name>
+  <summary>Control an IC-7300 and decode Morse code locally</summary>
+  <summary xml:lang="fr">Piloter un IC-7300 et décoder la CW localement</summary>
+  <description>
+    <p>IC-7300 Scope Desktop displays radio and audio spectra, a waterfall and received text for the Icom IC-7300.</p>
+    <p>The package includes the DeepCW model and CPU inference engine. Station details and USB or remote connections are configured on first launch. Digital modes include CW, RTTY and SSTV, with FT8 and FT4 available through WSJT-X.</p>
+    <p xml:lang="fr">IC-7300 Scope Desktop affiche les spectres radio et audio, un waterfall et le texte reçu avec l’Icom IC-7300.</p>
+    <p xml:lang="fr">Le paquet inclut le modèle DeepCW et le moteur de calcul sur CPU. La station et la connexion USB ou distante se configurent au premier lancement. Il propose la CW, la RTTY et la SSTV ; FT8 et FT4 utilisent WSJT-X.</p>
+  </description>
+  <developer id="io.github.f4hxn"><name>F4HXN</name></developer>
+  <launchable type="desktop-id">ic7300-scope-desktop.desktop</launchable>
+  <provides><binary>ic7300-scope-desktop</binary></provides>
+  <url type="homepage">https://github.com/F4HXN/ic7300-scope</url>
+  <url type="bugtracker">https://github.com/F4HXN/ic7300-scope/issues</url>
+  <url type="vcs-browser">https://github.com/F4HXN/ic7300-scope</url>
+  <categories><category>HamRadio</category><category>Network</category></categories>
+  <content_rating type="oars-1.1"/>
+  <supports><control>pointing</control><control>keyboard</control></supports>
+  <recommends><display_length compare="ge">1280</display_length></recommends>
+  <releases>
+    <release version="@VERSION@" date="2026-11-15">
+      <description><p>Add author and license information and desktop software-center metadata.</p></description>
+    </release>
+  </releases>
+</component>
