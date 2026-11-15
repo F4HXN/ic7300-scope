@@ -22,11 +22,22 @@ ic7300-scope-desktop
 Une entrée « IC-7300 Scope Desktop » est ajoutée au menu. Le paquet contient
 les métadonnées AppStream (auteur, licence, description et lanceur) utilisées
 par les logithèques. L’auteur et la licence sont aussi dans **Aide → À propos…**.
-La validation PackageKit en simulation est distincte du rendu de Discover :
-une absence de bouton dans sa page de fichier local ne prouve pas un rejet du
-paquet. La commande APT ci-dessus permet l’installation directe dans ce cas.
+Avec **Discover 6.6.6**, la fiche d’un `.deb` local a deux limites vérifiées :
 
- Au premier lancement,
+- Le libellé « Installer depuis… » contient le chemin complet du fichier. À la
+  largeur par défaut (936 px dans le test), le bouton est masqué par manque de
+  place ; il devient visible et actif en élargissant ou maximisant la fenêtre.
+- Cette fiche utilise les détails génériques de PackageKit et ne lit pas le
+  fichier AppStream embarqué : l’auteur reste vide et la licence peut être
+  « inconnue ». Le paquet contient bien F4HXN, la licence MIT et les métadonnées
+  AppStream validées. Ils sont aussi consultables dans **Aide → À propos…**.
+
+La simulation d’installation PackageKit réussit. Ces limites d’affichage ne
+signifient pas un rejet du paquet. La commande APT ci-dessus permet également
+l’installation directe. Une fiche complète en logithèque avant installation
+nécessite une publication dans un catalogue de dépôt avec métadonnées AppStream.
+
+Au premier lancement,
 choisir le port CI-V et les périphériques USB Audio CODEC, ou le nom/l'adresse
 du PC distant déjà configuré pour partager la radio. La station est vierge ;
 l'indicatif, le prénom, le QTH et le locator sont à renseigner. Annuler ferme

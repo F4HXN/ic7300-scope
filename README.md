@@ -36,6 +36,12 @@ sudo apt install ./ic7300-scope-desktop_1.0.1-1ubuntu26.04_amd64.deb
 ic7300-scope-desktop
 ```
 
+**Discover 6.6.6 :** si le bouton Installer est absent, élargir ou maximiser
+la fenêtre : son libellé avec le chemin complet peut manquer de place. Sa fiche
+de fichier `.deb` local peut afficher un auteur vide et une licence inconnue,
+car elle ne lit pas les métadonnées AppStream embarquées. Le paquet inclut bien
+l’auteur F4HXN et la licence MIT. Voir les [détails du diagnostic](desktop/README.md).
+
 Les [sources de distribution et instructions de mise à jour](desktop/README.md)
 sont dans `desktop/`. La construction se lance avec
 `./desktop/packaging/build-deb.sh` après préparation des artefacts.
