@@ -51,6 +51,7 @@ class SetupTests(unittest.TestCase):
                 self.assertLess(window.settings_button.x(),window.about_button.x())
                 self.assertEqual(window.settings_button.y(),window.about_button.y())
                 self.assertEqual(window.settings_button.size(),window.about_button.size())
+                self.assertGreaterEqual(window.settings_button.x() - window.local_label.x() - window.local_label.width(), 16)
                 with patch.object(scope,'edit_settings',return_value=None) as settings:
                     window.settings_button.click()
                     settings.assert_called_once()

@@ -1,10 +1,10 @@
 ## Paquet Debian prêt à installer
 
-La version **Desktop 1.2** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
+La version **Desktop 1.2.1** est disponible pour **Ubuntu 26.04 amd64 (Python 3.14)** :
 
-**[⬇ Télécharger le paquet .deb 1.2](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**
+**[⬇ Télécharger le paquet .deb 1.2.1](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2.1/ic7300-scope-desktop_1.2.1-1ubuntu26.04_amd64.deb)**
 
-[Release et empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.2).
+[Release et empreinte SHA-256](https://github.com/F4HXN/ic7300-scope/releases/tag/desktop-v1.2.1).
 
 Auteur : **F4HXN**. Le code de l’application est sous **[licence MIT](LICENSE)**.
 Les composants tiers conservent leurs licences et crédits.
@@ -15,7 +15,7 @@ choisir la connexion USB ou distante et renseigner ses propres informations.
 Le profil `~/.config/ic7300-scope-desktop/` est séparé de celui de développement.
 
 ```bash
-sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
+sudo apt install ./ic7300-scope-desktop_1.2.1-1ubuntu26.04_amd64.deb
 ic7300-scope-desktop
 ```
 
@@ -152,11 +152,11 @@ ni interface externe ni logiciel de pilotage à installer.
 
 Pour **Ubuntu 26.04 amd64 (Python 3.14)** :
 
-1. **[Télécharger le .deb 1.2 sur GitHub](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**.
+1. **[Télécharger le .deb 1.2.1 sur GitHub](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2.1/ic7300-scope-desktop_1.2.1-1ubuntu26.04_amd64.deb)**.
 2. Ouvrir un terminal dans le dossier du fichier téléchargé et installer :
 
    ```bash
-   sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
+   sudo apt install ./ic7300-scope-desktop_1.2.1-1ubuntu26.04_amd64.deb
    ```
 
 3. Lancer **IC-7300 Scope Desktop** depuis le menu, ou :

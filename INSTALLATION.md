@@ -4,11 +4,11 @@
 
 Pour **Ubuntu 26.04 amd64 (Python 3.14)** :
 
-1. **[Télécharger le .deb 1.2 sur GitHub](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**.
+1. **[Télécharger le .deb 1.2.1 sur GitHub](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2.1/ic7300-scope-desktop_1.2.1-1ubuntu26.04_amd64.deb)**.
 2. Ouvrir un terminal dans le dossier du fichier téléchargé et installer :
 
    ```bash
-   sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
+   sudo apt install ./ic7300-scope-desktop_1.2.1-1ubuntu26.04_amd64.deb
    ```
 
 3. Lancer **IC-7300 Scope Desktop** depuis le menu, ou :

@@ -1787,6 +1787,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for button in (self.settings_button, self.about_button):
             button.setFixedSize(width, height)
             settings_row.addWidget(button, alignment=QtCore.Qt.AlignVCenter)
+        top.addSpacing(16)
         top.addLayout(settings_row)
         self.clock_timer = QtCore.QTimer(self)
         self.clock_timer.timeout.connect(self.update_clock)

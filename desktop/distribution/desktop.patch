@@ -61,7 +61,7 @@
          self.audio = AudioReader(args.source)   # démarré une fois l'écran prêt
          self.audio_rate = RATE
          self.sstv_window = None
-@@ -1778,6 +1773,21 @@
+@@ -1778,6 +1773,22 @@
              clock.addWidget(label)
          top.addSpacing(30)
          top.addLayout(clock)
@@ -79,11 +79,12 @@
 +        for button in (self.settings_button, self.about_button):
 +            button.setFixedSize(width, height)
 +            settings_row.addWidget(button, alignment=QtCore.Qt.AlignVCenter)
++        top.addSpacing(16)
 +        top.addLayout(settings_row)
          self.clock_timer = QtCore.QTimer(self)
          self.clock_timer.timeout.connect(self.update_clock)
          self.update_clock()
-@@ -3550,6 +3560,38 @@
+@@ -3550,6 +3561,38 @@
          except OSError:
              pass
  
@@ -122,7 +123,7 @@
      def on_station(self):
          """Prénom, QTH, locator et matériel repris dans les messages CW."""
          dialog = QtWidgets.QDialog(self)
-@@ -5258,12 +5300,12 @@
+@@ -5258,12 +5301,12 @@
  
  def main():
      parser = argparse.ArgumentParser(description=__doc__)
@@ -139,7 +140,7 @@
      parser.add_argument("--fmax", type=int, default=3500,
                          help="fréquence audio maximale affichée (Hz)")
      parser.add_argument("--no-cat", action="store_true",
-@@ -5272,9 +5314,21 @@
+@@ -5272,9 +5315,21 @@
      parser.add_argument("--remote", metavar="HÔTE",
                          help="radio branchée sur un autre PC du réseau, qui fait "
                               "tourner cat_server.py et partage son son")
@@ -163,7 +164,7 @@
      remote_modules = []
      if args.remote:
          try:
-@@ -5287,20 +5341,6 @@
+@@ -5287,20 +5342,6 @@
          # radio en USB sur ce PC : l'écoute n'existe que tant que l'appli tourne
          remote_modules = local_listen(args.source)
  
