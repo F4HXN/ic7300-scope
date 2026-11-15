@@ -109,13 +109,14 @@ class CwDecoder:
         self._t += BLOCK_SECONDS
         # le CW est silencieux au moins la moitié du temps : le bas de
         # l'enveloppe récente donne le bruit, le haut donne le signal
-        if e > NOISE_FLOOR:             # un silence numérique ne dit rien du bruit
-            self._history[self._filled % len(self._history)] = e
-            self._filled += 1
-            if self._filled % 10 == 0:
-                recent = self._history[:min(self._filled, len(self._history))]
-                self._noise, self._signal = np.percentile(recent, (20, 95))
-                self._noise = max(self._noise, NOISE_FLOOR)
+        # Les silences font partie de l'estimation du bruit. Les exclure
+        # empêchait le décodage d'un signal CW propre (silence numérique).
+        self._history[self._filled % len(self._history)] = e
+        self._filled += 1
+        if self._filled % 10 == 0:
+            recent = self._history[:min(self._filled, len(self._history))]
+            self._noise, self._signal = np.percentile(recent, (20, 95))
+            self._noise = max(self._noise, NOISE_FLOOR)
         span = self._signal - self._noise
         threshold = self._noise + (0.4 if self._key else 0.55) * span
         wanted = self.has_signal and e > threshold

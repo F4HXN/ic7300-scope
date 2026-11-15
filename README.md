@@ -162,6 +162,48 @@ python3 ic7300_scope.py --remote <IP>   # radio branchée sur un autre PC
 
 ---
 
+## Décodage CW amélioré (DeepCW, facultatif)
+
+Sur Linux, depuis le dossier du dépôt :
+
+```sh
+./install-cw.sh
+```
+
+L'installation crée `.venv-cw` (avec accès aux dépendances système de
+l'interface) et télécharge un modèle versionné dont l'empreinte SHA-256 est
+vérifiée. Python 3.10+ et une version d'ONNX Runtime compatible sont nécessaires.
+Les lancements habituels, y compris les raccourcis PC principal/portable,
+utilisent ensuite cet environnement automatiquement. Redémarrer l'application
+et choisir **CW** : la ligne d'état affiche **DeepCW**. Aucun audio n'est envoyé
+sur Internet ; le décodage tourne sur le CPU local, dans un fil séparé.
+
+La note automatique ou le clic sur le spectre sélectionne la station, filtrée
+sur environ 200 Hz utiles puis recentrée pour le modèle. L'affichage arrive
+avec quelques secondes de retard (environ 3–5 s). Le texte n'est pas réécrit par
+un dictionnaire : aucun indicatif n'est volontairement deviné. Des erreurs
+restent possibles, particulièrement avec des stations voisines ou du fading.
+
+Si le modèle manque, le décodeur classique reste utilisé. En cas d'erreur de
+chargement ou d'inférence, le statut indique le retour au décodeur classique.
+Pour forcer celui-ci :
+
+```sh
+IC7300_CW_ENGINE=classic ./ic7300_scope.py
+```
+
+Validation automatisée (les essais neuronaux sont ignorés sans le modèle) :
+
+```sh
+.venv-cw/bin/python -m unittest discover -s tests -v
+```
+
+Première comparaison sur un message synthétique à 12/20/30 mots/min et quatre
+niveaux de bruit blanc : DeepCW amont a décodé exactement 11 cas sur 12, contre
+2/12 pour l'ancien décodeur. Ce petit échantillon ne mesure pas les performances
+en réception réelle. Le décodeur classique a depuis été corrigé pour inclure
+les silences numériques dans son estimation du bruit.
+
 ## Trafic en CW
 
 La ligne d'émission CW se trouve **juste sous le texte reçu** : on lit, puis on

@@ -10,3 +10,6 @@ windows/
 /android-etat/.gradle/
 /android-etat/local.properties
 /android-etat/**/build/
+
+/models/deepcw/
+/.venv-cw/

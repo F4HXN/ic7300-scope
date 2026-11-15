@@ -20,6 +20,15 @@ import unicodedata
 import wave
 import xml.etree.ElementTree as ET
 
+# L'installation CW locale reste isolée et s'applique aussi aux raccourcis.
+if (__name__ == "__main__" and os.name != "nt"
+        and os.environ.get("IC7300_CW_ENGINE", "").lower() != "classic"
+        and sys.prefix == sys.base_prefix):
+    cw_python = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             ".venv-cw", "bin", "python")
+    if os.path.isfile(cw_python):
+        os.execv(cw_python, [cw_python, os.path.abspath(__file__), *sys.argv[1:]])
+
 import numpy as np
 import serial
 from PyQt5 import QtCore, QtGui, QtWidgets
@@ -30,6 +39,7 @@ if WINDOWS:
     from windows import windows_audio as win_audio
 
 from cw_decoder import CwDecoder
+from cw_neural import make_cw_decoder
 from cw_pioche import char_schedule, hand_timing, radio_frames
 import carnet
 import look_radio
@@ -601,7 +611,7 @@ class AudioReader(QtCore.QThread):
         self.source = source
         self.proc = None
         self._running = True
-        self.decoders = {"cw": CwDecoder(RATE), "rtty": RttyDecoder(RATE),
+        self.decoders = {"cw": make_cw_decoder(RATE), "rtty": RttyDecoder(RATE),
                          "rtty50": RttyDecoder(RATE, baud=50, shift=450,
                                                inverted=True),
                          "ft8": Ft8Decoder(RATE),
@@ -682,6 +692,8 @@ class AudioReader(QtCore.QThread):
 
     def stop(self):
         self.stop_recording()
+        if hasattr(self.decoders["cw"], "close"):
+            self.decoders["cw"].close()
         self.decoders["ft8"].close()
         self.decoders["ft4"].close()
         self._running = False
@@ -4624,6 +4636,10 @@ class MainWindow(QtWidgets.QMainWindow):
         decoder = self.audio.decoders.get(name)
         if decoder:
             decoder.auto_pitch = self.decoder_auto.isChecked()
+        previous = self.audio.decoder
+        for item in (previous, decoder):
+            if hasattr(item, "reset"):
+                item.reset()
         self.audio.decoder = decoder
         self.decoder_box.setVisible(decoder is not None)
         for button in self.decoder_text_buttons:
