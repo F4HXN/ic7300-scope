@@ -148,11 +148,33 @@ ni interface externe ni logiciel de pilotage à installer.
 
 ## Installation
 
+### Installation avec le paquet `.deb` — recommandée
+
+Pour **Ubuntu 26.04 amd64 (Python 3.14)** :
+
+1. **[Télécharger le .deb 1.2 sur GitHub](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**.
+2. Ouvrir un terminal dans le dossier du fichier téléchargé et installer :
+
+   ```bash
+   sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
+   ```
+
+3. Lancer **IC-7300 Scope Desktop** depuis le menu, ou :
+
+   ```bash
+   ic7300-scope-desktop
+   ```
+
+DeepCW et son modèle sont inclus ; APT installe les dépendances système manquantes.
+Au premier lancement, renseigner la station et choisir la connexion USB ou distante.
+Le bouton **Paramètres…** permet de revenir sur ces choix.
+Les sections ci-dessous décrivent l’installation depuis les sources.
+
 > 📗 Manuel complet du logiciel, écran par écran : [MANUEL.md](MANUEL.md)
 >
 > 📘 Guide pas à pas pour un PC Ubuntu (paquets, radio, son, pilotage à distance, dépannage) : [INSTALLATION.md](INSTALLATION.md)
 
-### Dépendances
+### Dépendances pour l’installation depuis les sources
 
 ```bash
 sudo apt install python3-pyqt5 python3-pyqtgraph python3-numpy python3-scipy \

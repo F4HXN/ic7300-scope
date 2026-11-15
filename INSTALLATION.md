@@ -1,5 +1,27 @@
 # Installer IC-7300 Scope sur Ubuntu
 
+## Installation avec le paquet `.deb` — recommandée
+
+Pour **Ubuntu 26.04 amd64 (Python 3.14)** :
+
+1. **[Télécharger le .deb 1.2 sur GitHub](https://github.com/F4HXN/ic7300-scope/releases/download/desktop-v1.2/ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb)**.
+2. Ouvrir un terminal dans le dossier du fichier téléchargé et installer :
+
+   ```bash
+   sudo apt install ./ic7300-scope-desktop_1.2-1ubuntu26.04_amd64.deb
+   ```
+
+3. Lancer **IC-7300 Scope Desktop** depuis le menu, ou :
+
+   ```bash
+   ic7300-scope-desktop
+   ```
+
+DeepCW et son modèle sont inclus ; APT installe les dépendances système manquantes.
+Au premier lancement, renseigner la station et choisir la connexion USB ou distante.
+Le bouton **Paramètres…** permet de revenir sur ces choix.
+Le `.deb` fourni cible Ubuntu 26.04 amd64. Les sections suivantes décrivent l’installation depuis les sources, notamment pour Ubuntu 24.04.
+
 ## Ce qu'il faut
 
 Un seul câble USB entre l'IC-7300 et le PC suffit : il porte la commande CI-V et la carte son de la radio. Ce guide installe l'ensemble sur Ubuntu 26.04 (testé) ou 24.04.
